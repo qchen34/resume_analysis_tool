@@ -1,0 +1,28 @@
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+.DS_Store
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# Local config
+.env
+*.sqlite
+*.db
+data/
+
+# Local examples with real data (do not commit)
+example_data/resume_example_1.md
+example_data/jd_example_1.md
+
+# Test artifacts
+test_outputs/*
+!test_outputs/.gitkeep
+
+
