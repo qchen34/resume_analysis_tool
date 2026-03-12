@@ -4,4 +4,7 @@ SQLAlchemy>=2.0.0
 typer>=0.12.0
 pytest>=8.0.0
 google-genai
+streamlit>=1.55.0
+langgraph>=0.2.0
+tavily-python
 
