@@ -1,5 +1,12 @@
 # Resume Analysis Tool
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)]()
+[![LangGraph](https://img.shields.io/badge/LangGraph-Orchestration-222222?logo=graph&logoColor=white)]()
+[![Streamlit](https://img.shields.io/badge/Streamlit-Web_UI-FF4B4B?logo=streamlit&logoColor=white)]()
+[![Gemini](https://img.shields.io/badge/Google_Gemini-LLM-4285F4?logo=google&logoColor=white)]()
+[![Tavily](https://img.shields.io/badge/Tavily-Search_API-000000)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 基于规则 + LLM 的简历与 JD 对比、匹配数据抽取与多角色辩论分析工具。当前版本强调：**解析阶段尽量不用 LLM、匹配阶段只输出“原始数据（不打分）”、分析解读全部交给后置的大牛辩论节点完成**，并支持 Tavily 公司/岗位/行业情报与本地数据库入库。
 
 ---
@@ -139,3 +146,19 @@ streamlit run app.py
 - Tavily（`tavily-python`）：公司/岗位/行业情报搜索
 - Streamlit：Web 前端展示分析过程与结果
 - 配置：`python-dotenv`，环境变量见 `.env.example`
+
+---
+
+## Star History（示例）
+
+> 说明：下面的 Star 趋势图使用的是 `star-history.com` 的公开服务。  
+> 等项目推送到 GitHub 后，请将其中的 `YOUR_GITHUB_USERNAME/resume_analysis_tool` 替换为真实仓库路径。
+
+[![Star History Chart](https://api.star-history.com/svg?repos=YOUR_GITHUB_USERNAME/resume_analysis_tool&type=Date)](https://star-history.com/#YOUR_GITHUB_USERNAME/resume_analysis_tool&Date)
+
+---
+
+## License
+
+本项目采用 **MIT License** 开源许可协议，允许在保留版权和许可声明的前提下自由使用、修改和分发。  
+如需在公司内部或商业项目中集成本工具，请遵守 MIT 协议要求。*** End Patch***}"/>

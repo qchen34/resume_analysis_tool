@@ -7,4 +7,7 @@ google-genai
 streamlit>=1.55.0
 langgraph>=0.2.0
 tavily-python
+pdfplumber
+pytesseract
+Pillow
 

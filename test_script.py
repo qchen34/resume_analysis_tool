@@ -22,6 +22,7 @@ from src.llm.prompts import DEBATE_SYSTEM_PROMPT, DEBATE_SUMMARY_SYSTEM_PROMPT
 from src.parsers.jd_parser import parse_jd
 from src.parsers.resume_parser import parse_resume
 from src.models.schemas import JobProfile, ResumeProfile, MatchingResult
+from src.ocr.ocr_utils import extract_text_auto, find_ocr_sources
 
 
 def _usage_snapshot() -> Dict[str, Optional[int]]:
@@ -166,6 +167,93 @@ def _summarize_debate(rounds: list[Dict[str, Any]]) -> Dict[str, Any]:
         return {}
 
     return summary
+
+
+def _run_ocr_examples(base_dir: Path, output_dir: Path) -> None:
+    """
+    从 example_data 目录中查找图片/PDF 文件，做 OCR + 规则解析，
+    并将 JD/简历的解析结果以 Markdown 报告形式输出，便于人工检查 OCR 质量。
+    """
+    example_dir = base_dir / "example_data"
+    sources = find_ocr_sources(example_dir)
+    if not sources:
+        return
+
+    jd_sections: list[str] = []
+    resume_sections: list[str] = []
+
+    for p in sources:
+        try:
+            text = extract_text_auto(p)
+        except Exception as exc:  # noqa: BLE001
+            section = (
+                f"### 文件: {p.name}\n\n"
+                f"- **状态**: OCR 失败（{exc}）\n"
+            )
+            if "jd" in p.stem.lower():
+                jd_sections.append(section)
+            elif "resume" in p.stem.lower() or "cv" in p.stem.lower():
+                resume_sections.append(section)
+            continue
+
+        # 简单根据文件名中的关键字判断是 JD 还是简历
+        lowered = p.stem.lower()
+        if "jd" in lowered or "job" in lowered:
+            try:
+                job_profile, job_json = parse_jd(text)
+                section = (
+                    f"### 文件: {p.name}\n\n"
+                    "#### OCR 提取文本（截断预览）\n\n"
+                    "```text\n"
+                    f"{text[:1000]}\n"
+                    "```\n\n"
+                    "#### 规则解析 JobProfile（repr）\n\n"
+                    f"`{repr(job_profile)}`\n\n"
+                    "#### 解析 JSON\n\n"
+                    "```json\n"
+                    f"{job_json}\n"
+                    "```\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                section = (
+                    f"### 文件: {p.name}\n\n"
+                    "- **状态**: OCR 成功但 parse_jd 失败。\n"
+                    f"- 错误: {exc}\n"
+                )
+            jd_sections.append(section)
+        elif "resume" in lowered or "cv" in lowered:
+            try:
+                resume_profile, resume_json = parse_resume(text)
+                section = (
+                    f"### 文件: {p.name}\n\n"
+                    "#### OCR 提取文本（截断预览）\n\n"
+                    "```text\n"
+                    f"{text[:1000]}\n"
+                    "```\n\n"
+                    "#### 规则解析 ResumeProfile（repr）\n\n"
+                    f"`{repr(resume_profile)}`\n\n"
+                    "#### 解析 JSON\n\n"
+                    "```json\n"
+                    f"{resume_json}\n"
+                    "```\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                section = (
+                    f"### 文件: {p.name}\n\n"
+                    "- **状态**: OCR 成功但 parse_resume 失败。\n"
+                    f"- 错误: {exc}\n"
+                )
+            resume_sections.append(section)
+
+    if jd_sections:
+        jd_ocr_path = output_dir / "parse_jd_ocr.md"
+        content = ["# OCR + 规则解析 JD 报告\n"] + jd_sections
+        jd_ocr_path.write_text("\n".join(content), encoding="utf-8")
+
+    if resume_sections:
+        resume_ocr_path = output_dir / "parse_resume_ocr.md"
+        content = ["# OCR + 规则解析 简历 报告\n"] + resume_sections
+        resume_ocr_path.write_text("\n".join(content), encoding="utf-8")
 
 
 def main() -> None:
@@ -469,6 +557,10 @@ def main() -> None:
     debate_report_path = output_dir / "debate_report.md"
     debate_report_path.write_text("\n".join(debate_lines), encoding="utf-8")
 
+    # 4.6 OCR 示例解析报告（如有图片/PDF 示例）
+    print("      [附加] 运行 OCR 示例解析（如 example_data 下存在图片/PDF）...")
+    _run_ocr_examples(base_dir, output_dir)
+
     print(f"      报告目录: {output_dir}")
 
     # print("[6/7] 简历重写（含可选通顺性审核）...")
@@ -518,6 +610,7 @@ def main() -> None:
     print(f"- Tavily 报告: {tavily_report_path}")
     print(f"- Matching 报告: {match_report_path}")
     print(f"- Debate 报告: {debate_report_path}")
+    # OCR 报告文件是否存在取决于 example_data 中是否有图片/PDF，这里不单独打印路径
 
     if save_to_db:
         try:
