@@ -12,7 +12,16 @@ from src.parsers.resume_parser import parse_resume
 from src.analysis.matching_engine import compute_matching_with_details
 from src.analysis.tavily_search import run_tavily_search
 from src.models.schemas import JobProfile, ResumeProfile, MatchingResult
-from src.llm.prompts import DEBATE_SYSTEM_PROMPT, DEBATE_SUMMARY_SYSTEM_PROMPT
+from src.llm.prompts import (
+    DEBATE_SYSTEM_PROMPT,
+    DEBATE_STANCE_INSTRUCTION,
+    DEBATE_SUMMARY_SYSTEM_PROMPT,
+)
+from src.llm.debate_personas import (
+    get_persona,
+    get_enabled_personas_from_env,
+    draw_stance,
+)
 
 
 class AnalysisState(TypedDict, total=False):
@@ -29,10 +38,8 @@ class AnalysisState(TypedDict, total=False):
     matching_result: MatchingResult
     matching_refined: Dict[str, Any]
 
-    # 大牛辩论与合议
-    debate_wangchuan: Dict[str, Any]
-    debate_naval: Dict[str, Any]
-    debate_trump: Dict[str, Any]
+    # 大牛辩论与合议（debate_all 写入 debate_rounds）
+    debate_personas_override: list[str]  # 可选，前端传入时优先于 DEBATE_PERSONAS
     debate_rounds: list[Dict[str, Any]]
     final_competitiveness: Dict[str, Any]
 
@@ -97,59 +104,30 @@ def _match_core_node(state: AnalysisState) -> AnalysisState:
         return {"error": f"matching failed: {exc}"}
 
 
-def _debate_persona_node(state: AnalysisState, persona: str, state_key: str) -> AnalysisState:
-    """单个大牛角色的辩论节点：根据 env 中的 DEBATE_PERSONAS 决定是否启用。
-
-    为了支持在图中并行执行，每个 persona 节点只写入各自独立的 state_key，
-    最终在 summary 节点中再统一汇总为 debate_rounds。
-    """
-    enabled_raw = os.getenv("DEBATE_PERSONAS", "wangchuan,naval,trump")
-    enabled = {p.strip().lower() for p in enabled_raw.split(",") if p.strip()}
-    if persona.lower() not in enabled:
+def _run_single_debate(
+    persona_id: str,
+    jd_text: str,
+    resume_text: str,
+    matching_result: Any,
+    matching_refined: Dict[str, Any],
+    tavily_insights: Dict[str, Any],
+) -> Dict[str, Any]:
+    """对单个大牛执行一轮辩论，返回该角色的 JSON 结果（含 stance）。"""
+    conf = get_persona(persona_id)
+    if not conf:
         return {}
-
-    jd_text = state.get("jd_text", "") or ""
-    resume_text = state.get("resume_text", "") or ""
-    matching_result = state.get("matching_result")
-    matching_refined = state.get("matching_refined") or {}
-    tavily_insights = state.get("tavily_insights") or {}
-
-    if matching_result is None:
-        return {}
-
-    persona_styles = {
-        "wangchuan": {
-            "display_name": "王川",
-            "style": "你现在扮演王川，从谨慎且略偏悲观的 HR/用人经理视角出发，更关注风险、机会成本和淘汰率，会结合当前行情偏冷、HC 紧缩，强调筛选标准偏高，说话理性、略带冷幽默。",
-        },
-        "naval": {
-            "display_name": "Naval",
-            "style": "你现在扮演 Naval，从相对乐观的长期主义投资人/用人方视角出发，更关注候选人的长期潜力、可放大的杠杆、未来成长空间，即使当前匹配度一般也会思考“值不值得押注”，说话简洁、有格局，用中文表达。",
-        },
-        "trump": {
-            "display_name": "特朗普",
-            "style": "你现在扮演特朗普，从一线 HR/老板非常现实甚至有点刻薄的视角出发，风格直接、敢说难听话、偏悲观一些，但所有吐槽都要有事实依据，结合 JD、简历和市场环境说明为什么可能拿不到 offer 或性价比一般。",
-        },
-    }
-    style_conf = persona_styles.get(
-        persona.lower(),
-        {
-            "display_name": persona,
-            "style": f"你现在扮演 {persona} 这一角色，说话风格可以有个人色彩，但判断要有依据、接地气。",
-        },
-    )
-
+    stance = draw_stance()
     system_prompt = (
         DEBATE_SYSTEM_PROMPT
+        + "\n\n"
+        + DEBATE_STANCE_INSTRUCTION.format(stance=stance)
         + "\n\n当前角色设定：\n"
-        + style_conf["style"]
+        + conf["description"]
     )
-
     mr_json = matching_result.model_dump(mode="json")
     mr_text = json.dumps(mr_json, ensure_ascii=False, indent=2)
     refined_text = json.dumps(matching_refined, ensure_ascii=False, indent=2)
     tavily_text = json.dumps(tavily_insights, ensure_ascii=False, indent=2)
-
     user_prompt = (
         "下面是本次评估所需的全部上下文，你需要基于它们做出对候选人竞争力的判断：\n\n"
         "【职位 JD 原文】\n"
@@ -164,12 +142,10 @@ def _debate_persona_node(state: AnalysisState, persona: str, state_key: str) -> 
         f"{tavily_text}\n\n"
         "请严格按照 system 提示给出的 JSON 结构，输出一条本角色的判断。"
     )
-
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-
     raw = llm_client.chat(messages, temperature=0.4)
     text = raw.strip()
     if text.startswith("```"):
@@ -178,27 +154,49 @@ def _debate_persona_node(state: AnalysisState, persona: str, state_key: str) -> 
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-
     try:
         data = json.loads(text)
         if not isinstance(data, dict):
             return {}
     except json.JSONDecodeError:
         return {}
+    data.setdefault("persona", persona_id)
+    data.setdefault("display_name", conf["display_name"])
+    data["stance"] = stance
+    return data
 
-    data.setdefault("persona", persona)
-    data.setdefault("display_name", style_conf["display_name"])
 
-    return {state_key: data}
+def _debate_all_node(state: AnalysisState) -> AnalysisState:
+    """按人选顺序依次运行各大牛辩论，每人随机 50% 看好/看空，汇总为 debate_rounds。人选优先用 state 中的 debate_personas_override，否则用 DEBATE_PERSONAS。"""
+    jd_text = state.get("jd_text", "") or ""
+    resume_text = state.get("resume_text", "") or ""
+    matching_result = state.get("matching_result")
+    matching_refined = state.get("matching_refined") or {}
+    tavily_insights = state.get("tavily_insights") or {}
+    if matching_result is None:
+        return {}
+    override = state.get("debate_personas_override")
+    enabled = [p.strip().lower() for p in override if p.strip()] if override else get_enabled_personas_from_env()
+    if not enabled:
+        return {}
+    rounds: list[Dict[str, Any]] = []
+    for persona_id in enabled:
+        result = _run_single_debate(
+            persona_id,
+            jd_text,
+            resume_text,
+            matching_result,
+            matching_refined,
+            tavily_insights,
+        )
+        if result:
+            rounds.append(result)
+    return {"debate_rounds": rounds}
 
 
 def _debate_summary_node(state: AnalysisState) -> AnalysisState:
     """根据前面各大牛的发言，做一次合议总结。"""
-    rounds: list[Dict[str, Any]] = []
-    for key in ("debate_wangchuan", "debate_naval", "debate_trump"):
-        value = state.get(key)
-        if isinstance(value, dict) and value:
-            rounds.append(value)
+    rounds: list[Dict[str, Any]] = list(state.get("debate_rounds") or [])
 
     if not rounds:
         return {}
@@ -260,28 +258,18 @@ def _build_graph() -> Any:
     # 核心匹配层
     graph.add_node("match_core", _match_core_node)
 
-    # 大牛辩论层：各 persona 并行执行，最后在 summary 汇总
-    graph.add_node("debate_wangchuan", lambda s: _debate_persona_node(s, "wangchuan", "debate_wangchuan"))
-    graph.add_node("debate_naval", lambda s: _debate_persona_node(s, "naval", "debate_naval"))
-    graph.add_node("debate_trump", lambda s: _debate_persona_node(s, "trump", "debate_trump"))
+    # 大牛辩论层：单节点按 DEBATE_PERSONAS 顺序依次跑各大牛（每人随机看好/看空），再 summary
+    graph.add_node("debate_all", _debate_all_node)
     graph.add_node("debate_summary", _debate_summary_node)
 
-    # 边：当前采用简单串行结构，后续可按需改为真正并行
+    # 边
     graph.set_entry_point("parse_jd")
     graph.add_edge("parse_jd", "parse_resume")
     graph.add_edge("parse_resume", "keyword_match")
     graph.add_edge("keyword_match", "tavily_search")
     graph.add_edge("tavily_search", "match_core")
-
-    # 从 match_core 发散，三个大牛并行评估
-    graph.add_edge("match_core", "debate_wangchuan")
-    graph.add_edge("match_core", "debate_naval")
-    graph.add_edge("match_core", "debate_trump")
-
-    # 所有大牛的结果汇总到 summary
-    graph.add_edge("debate_wangchuan", "debate_summary")
-    graph.add_edge("debate_naval", "debate_summary")
-    graph.add_edge("debate_trump", "debate_summary")
+    graph.add_edge("match_core", "debate_all")
+    graph.add_edge("debate_all", "debate_summary")
     graph.add_edge("debate_summary", END)
 
     return graph.compile()
@@ -294,13 +282,19 @@ def get_graph() -> Any:
     return _GRAPH
 
 
-def run_analysis(jd_text: str, resume_text: str) -> AnalysisState:
-    """运行一次完整分析：解析 JD/简历 → 关键词匹配/Tavily（占位）→ 匹配 → 辩论（占位）."""
+def run_analysis(
+    jd_text: str,
+    resume_text: str,
+    debate_personas_override: list[str] | None = None,
+) -> AnalysisState:
+    """运行一次完整分析。debate_personas_override 非空时优先于 .env 的 DEBATE_PERSONAS（如前端多选）。"""
     graph = get_graph()
     initial_state: AnalysisState = {
         "jd_text": jd_text,
         "resume_text": resume_text,
     }
+    if debate_personas_override:
+        initial_state["debate_personas_override"] = debate_personas_override
     final_state: AnalysisState = graph.invoke(initial_state)
     return final_state
 

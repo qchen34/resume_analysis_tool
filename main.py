@@ -18,11 +18,25 @@ from src.analysis.matching_engine import compute_matching, compute_matching_with
 from src.analysis.tavily_search import run_tavily_search
 from src.analysis.resume_rewriter import rewrite_resume_for_job
 from src.llm.client import llm_client
-from src.llm.prompts import DEBATE_SYSTEM_PROMPT, DEBATE_SUMMARY_SYSTEM_PROMPT
+from src.llm.prompts import (
+    DEBATE_SYSTEM_PROMPT,
+    DEBATE_STANCE_INSTRUCTION,
+    DEBATE_SUMMARY_SYSTEM_PROMPT,
+)
+from src.llm.debate_personas import (
+    get_persona,
+    get_enabled_personas_from_env,
+    draw_stance,
+)
 from src.parsers.jd_parser import parse_jd
 from src.parsers.resume_parser import parse_resume
 from src.models.schemas import JobProfile, ResumeProfile, MatchingResult
-from src.ocr.ocr_utils import extract_text_auto, find_ocr_sources
+from src.ocr.ocr_utils import (
+    extract_text_auto,
+    find_ocr_sources,
+    get_jd_and_resume_from_input,
+    get_input_dir,
+)
 
 
 def _usage_snapshot() -> Dict[str, Optional[int]]:
@@ -43,50 +57,30 @@ def _usage_snapshot() -> Dict[str, Optional[int]]:
 
 
 def _run_debate_for_persona(
-    persona: str,
+    persona_id: str,
     jd_text: str,
     resume_text: str,
     matching_result: MatchingResult,
     matching_refined: Dict[str, Any],
     tavily_insights: Dict[str, Any] | None,
 ) -> Dict[str, Any]:
-    """对单个大牛角色运行一轮辩论，返回该 persona 的 JSON 结果。"""
-    enabled_raw = os.getenv("DEBATE_PERSONAS", "wangchuan,naval,trump")
-    enabled = {p.strip().lower() for p in enabled_raw.split(",") if p.strip()}
-    if persona.lower() not in enabled:
+    """对单个大牛角色运行一轮辩论，返回该 persona 的 JSON 结果（含随机看好/看空）。"""
+    conf = get_persona(persona_id)
+    if not conf:
         return {}
-
     tavily_insights = tavily_insights or {}
-
-    persona_styles = {
-        "wangchuan": {
-            "display_name": "王川",
-            "style": "你现在扮演王川，从谨慎且略偏悲观的 HR/用人经理视角出发，更关注风险、机会成本和淘汰率，会结合当前行情偏冷、HC 紧缩，强调筛选标准偏高，说话理性、略带冷幽默。",
-        },
-        "naval": {
-            "display_name": "Naval",
-            "style": "你现在扮演 Naval，从相对乐观的长期主义投资人/用人方视角出发，更关注候选人的长期潜力、可放大的杠杆、未来成长空间，即使当前匹配度一般也会思考“值不值得押注”，说话简洁、有格局，用中文表达。",
-        },
-        "trump": {
-            "display_name": "特朗普",
-            "style": "你现在扮演特朗普，从一线 HR/老板非常现实甚至有点刻薄的视角出发，风格直接、敢说难听话、偏悲观一些，但所有吐槽都要有事实依据，结合 JD、简历和市场环境说明为什么可能拿不到 offer 或性价比一般。",
-        },
-    }
-    style_conf = persona_styles.get(
-        persona.lower(),
-        {
-            "display_name": persona,
-            "style": f"你现在扮演 {persona} 这一角色，说话风格可以有个人色彩，但判断要有依据、接地气。",
-        },
+    stance = draw_stance()
+    system_prompt = (
+        DEBATE_SYSTEM_PROMPT
+        + "\n\n"
+        + DEBATE_STANCE_INSTRUCTION.format(stance=stance)
+        + "\n\n当前角色设定：\n"
+        + conf["description"]
     )
-
-    system_prompt = DEBATE_SYSTEM_PROMPT + "\n\n当前角色设定：\n" + style_conf["style"]
-
     mr_json = matching_result.model_dump(mode="json")
     mr_text = json.dumps(mr_json, ensure_ascii=False, indent=2)
     refined_text = json.dumps(matching_refined or {}, ensure_ascii=False, indent=2)
     tavily_text = json.dumps(tavily_insights, ensure_ascii=False, indent=2)
-
     user_prompt = (
         "下面是本次评估所需的全部上下文，你需要基于它们做出对候选人竞争力的判断：\n\n"
         "【职位 JD 原文】\n"
@@ -101,12 +95,10 @@ def _run_debate_for_persona(
         f"{tavily_text}\n\n"
         "请严格按照 system 提示给出的 JSON 结构，输出一条本角色的判断。"
     )
-
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-
     raw = llm_client.chat(messages, temperature=0.4)
     text = raw.strip()
     if text.startswith("```"):
@@ -115,16 +107,15 @@ def _run_debate_for_persona(
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-
     try:
         data = json.loads(text)
         if not isinstance(data, dict):
             return {}
     except json.JSONDecodeError:
         return {}
-
-    data.setdefault("persona", persona)
-    data.setdefault("display_name", style_conf["display_name"])
+    data.setdefault("persona", persona_id)
+    data.setdefault("display_name", conf["display_name"])
+    data["stance"] = stance
     return data
 
 
@@ -171,10 +162,10 @@ def _summarize_debate(rounds: list[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _run_ocr_examples(base_dir: Path, output_dir: Path) -> None:
     """
-    从 example_data 目录中查找图片/PDF 文件，做 OCR + 规则解析，
+    从 input 目录中查找图片/PDF 文件，做 OCR + 规则解析，
     并将 JD/简历的解析结果以 Markdown 报告形式输出，便于人工检查 OCR 质量。
     """
-    example_dir = base_dir / "example_data"
+    example_dir = base_dir / "input"
     sources = find_ocr_sources(example_dir)
     if not sources:
         return
@@ -261,13 +252,20 @@ def main() -> None:
     # 再次从项目根加载 .env，避免被其他模块的 load_dotenv()（从 cwd 加载）覆盖
     load_dotenv(base_dir / ".env", override=True)
 
-    jd_path = base_dir / "example_data" / "jd_example_1.md"
-    resume_path = base_dir / "example_data" / "resume_example_1.md"
-
-    print("[1/7] 读取 JD 与简历...")
-    jd_text = jd_path.read_text(encoding="utf-8")
-    resume_text = resume_path.read_text(encoding="utf-8")
-    print(f"      JD: {jd_path.name}, 简历: {resume_path.name}")
+    # 统一从 input 目录读取 JD 与简历（唯一入口）
+    jd_path, resume_path = get_jd_and_resume_from_input(base_dir)
+    if jd_path is None or resume_path is None:
+        raise FileNotFoundError(
+            "未在 input 目录找到 JD 或简历。请将文件放入项目根目录下的 input/ 中，"
+            "文件名需含 jd 或 job（JD）、resume 或 cv（简历），支持 PDF 与常见图片格式。"
+        )
+    _model = os.getenv("GEMINI_MODEL") or getattr(llm_client, "_default_model", "gemini-3-flash-preview")
+    print("[1/8] 读取 JD 与简历（OCR 提取文本）")
+    print(f"      入口: input/ → JD={jd_path.name}, 简历={resume_path.name}")
+    print(f"      调用: Gemini API（{_model}）— Flash 多模态 OCR")
+    jd_text = extract_text_auto(jd_path)
+    resume_text = extract_text_auto(resume_path)
+    print("      完成")
 
     # 基于文本内容的缓存键，避免重复请求 LLM
     cache_root = base_dir / "test_outputs" / "cache"
@@ -283,7 +281,7 @@ def main() -> None:
     final_competitiveness: Dict[str, Any] | None = None
 
     if not force_reanalyze and cache_path.exists():
-        print("[2/7] 使用缓存跳过 JD/简历/匹配解析（若需重新解析请设 FORCE_REANALYZE=true）")
+        print("[2/8] 使用缓存跳过解析与匹配（设 FORCE_REANALYZE=true 可强制重新执行）")
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         job_profile = JobProfile.model_validate(data["job_profile"])
         job_json = data["job_json"]
@@ -300,21 +298,27 @@ def main() -> None:
         debate_rounds = data.get("debate_rounds")
         final_competitiveness = data.get("final_competitiveness")
     else:
-        print("[2/7] 解析 JD（规则版，无 LLM）...")
+        print("[2/8] 解析 JD")
+        print("      方式: 规则解析，无 API 调用")
         job_profile, job_json = parse_jd(jd_text)
         jd_usage = _usage_snapshot()
         print("      完成")
 
-        print("[3/7] 解析简历（规则版，无 LLM）...")
+        print("[3/8] 解析简历")
+        print("      方式: 规则解析，无 API 调用")
         resume_profile, resume_json = parse_resume(resume_text)
         resume_usage = _usage_snapshot()
         print("      完成")
 
-        print("[4/7] Tavily 搜索公司 / 岗位 / 行业情报（可选）...")
+        _tavily_key = os.getenv("TAVILY_API_KEY", "")
+        print("[4/8] Tavily 搜索（公司/岗位/行业情报）")
+        print(f"      调用: Tavily API（已配置密钥: {'是' if _tavily_key else '否'}，未配置则仅生成查询计划）")
         tavily_insights = run_tavily_search(job_profile)
-        print("      完成（或已跳过，仅生成搜索计划）")
+        print("      完成")
 
-        print("[5/8] 匹配分析（规则 + 句子级语义对齐）...")
+        _match_model = os.getenv("GEMINI_MODEL") or getattr(llm_client, "_default_model", "")
+        print("[5/8] 匹配分析（规则维度 + 句子级语义对齐）")
+        print(f"      调用: Gemini API（{_match_model}）— 语义对齐")
         matching_result, matching_refined = compute_matching_with_details(
             resume_profile,
             job_profile,
@@ -324,11 +328,15 @@ def main() -> None:
         match_usage = _usage_snapshot()
         print("      完成")
 
-        print("[6/8] 大牛辩论与合议（按 DEBATE_PERSONAS 配置）...")
+        _debate_model = os.getenv("GEMINI_MODEL") or getattr(llm_client, "_default_model", "")
+        print("[6/8] 大牛辩论与合议")
+        print(f"      调用: Gemini API（{_debate_model}）；每人随机 50% 看好/看空")
         debate_rounds = []
-        personas_raw = os.getenv("DEBATE_PERSONAS", "wangchuan,naval,trump")
-        personas = [p.strip() for p in personas_raw.split(",") if p.strip()]
+        personas = get_enabled_personas_from_env()
         for p in personas:
+            conf = get_persona(p)
+            _dn = conf.get("display_name", p) if conf else p
+            print(f"      → 角色: {_dn}")
             result = _run_debate_for_persona(
                 p,
                 jd_text=jd_text,
@@ -339,6 +347,7 @@ def main() -> None:
             )
             if result:
                 debate_rounds.append(result)
+        print(f"      → 合议总结: Gemini API（{_debate_model}）")
         final_competitiveness = _summarize_debate(debate_rounds or [])
         print("      完成")
 
@@ -358,7 +367,7 @@ def main() -> None:
         }
         cache_path.write_text(json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("[7/8] 生成 Markdown 报告...")
+    print("[7/8] 生成 Markdown 报告")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_root = base_dir / "test_outputs"
     output_dir = output_root / timestamp
@@ -505,8 +514,7 @@ def main() -> None:
     debate_lines.append(f"- **JD 文件**: `{jd_path}`")
     debate_lines.append(f"- **简历文件**: `{resume_path}`\n")
 
-    personas_raw = os.getenv("DEBATE_PERSONAS", "wangchuan,naval,trump")
-    personas = [p.strip() for p in personas_raw.split(",") if p.strip()]
+    personas = get_enabled_personas_from_env()
     debate_lines.append("## 使用的大牛角色\n")
     if personas:
         debate_lines.append(", ".join(personas) + "\n")
@@ -524,6 +532,9 @@ def main() -> None:
             advice = r.get("advice_to_candidate") or ""
 
             debate_lines.append(f"### {idx}. {display_name}\n")
+            stance = r.get("stance")
+            if stance:
+                debate_lines.append(f"- **本次立场**: {stance}")
             debate_lines.append(f"- **结论（verdict）**: {verdict}")
             if confidence is not None:
                 debate_lines.append(f"- **信心程度（0-1）**: {confidence}")
@@ -557,8 +568,8 @@ def main() -> None:
     debate_report_path = output_dir / "debate_report.md"
     debate_report_path.write_text("\n".join(debate_lines), encoding="utf-8")
 
-    # 4.6 OCR 示例解析报告（如有图片/PDF 示例）
-    print("      [附加] 运行 OCR 示例解析（如 example_data 下存在图片/PDF）...")
+    # 4.6 OCR 示例解析报告（如 input 下另有图片/PDF 可作示例）
+    print("      [附加] OCR 示例解析（input 目录内图片/PDF）...")
     _run_ocr_examples(base_dir, output_dir)
 
     print(f"      报告目录: {output_dir}")
@@ -604,14 +615,12 @@ def main() -> None:
         print(f"      [提示] 当前 SAVE_TO_DB={_raw!r}（.env 路径: {base_dir / '.env'}，存在: {(base_dir / '.env').exists()}）")
     elif save_to_db:
         print("      SAVE_TO_DB=true，正在写入数据库...")
-    print("测试报告已生成:")
+    print("报告已生成:")
     print(f"- JD 报告: {jd_report_path}")
     print(f"- 简历报告: {resume_report_path}")
     print(f"- Tavily 报告: {tavily_report_path}")
     print(f"- Matching 报告: {match_report_path}")
     print(f"- Debate 报告: {debate_report_path}")
-    # OCR 报告文件是否存在取决于 example_data 中是否有图片/PDF，这里不单独打印路径
-
     if save_to_db:
         try:
             from src.db.analysis_run_repo import save_analysis_run

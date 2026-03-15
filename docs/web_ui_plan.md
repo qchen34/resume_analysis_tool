@@ -1,6 +1,6 @@
 # 前端网页展示规划
 
-目标：用网页实现「输入简历 → 输入 JD → 展示 Matching Report → 展示 Resume Rewrite」的完整流程，复现当前 `test_script.py` 的核心步骤。
+目标：用网页实现「输入简历 → 输入 JD → 展示 Matching Report → 展示 Resume Rewrite」的完整流程，复现当前 `main.py` 的核心步骤。
 
 ---
 
@@ -55,7 +55,7 @@
 ## 三、数据流与后端复用
 
 - **输入**：页面收集 `jd_text`、`resume_text`（字符串）。
-- **调用顺序**（与 `test_script.py` 一致）：
+- **调用顺序**（与 `main.py` 一致）：
   1. `parse_jd(jd_text)` → `JobProfile`, `job_json`
   2. `parse_resume(resume_text)` → `ResumeProfile`, `resume_json`
   3. `compute_matching_with_details(resume_profile, job_profile)` → `MatchingResult`, `matching_refined`
@@ -107,7 +107,7 @@ resume_analysis_tool/
 ```
 
 - **运行**：`streamlit run app.py`（默认 http://localhost:8501）。
-- **环境**：与现有一致，需配置 `.env`（`GEMINI_API_KEY` 等）；在 `app.py` 开头 `load_dotenv()`，与 `test_script.py` 一致。
+- **环境**：与现有一致，需配置 `.env`（`GEMINI_API_KEY` 等）；在 `app.py` 开头 `load_dotenv()`，与 `main.py` 一致。
 
 ---
 
@@ -119,4 +119,4 @@ resume_analysis_tool/
 4. **接入重写**：调用 `rewrite_resume_for_job`，展示 Step 4（修改后全文 + 变更清单）。
 5. **可选**：职责/任职覆盖度展开、下载报告、入库勾选。
 
-按此顺序可每步验证，最终与当前 `test_script.py` 行为一致，并在网页上完成「输入 → Matching Report → Resume Rewrite」的完整展示。
+按此顺序可每步验证，最终与当前 `main.py` 行为一致，并在网页上完成「输入 → Matching Report → Resume Rewrite」的完整展示。

@@ -13,16 +13,13 @@
 
 ## 功能概览
 
-- **JD / 简历解析（规则占位版）**：当前阶段不再用 LLM 做结构化解析，只做非常轻量的规则抽取（如公司名、岗位名、地点），报告中直接输出 JD / 简历原文，便于人工阅读。
-- **Tavily 情报搜索**：基于解析出的公司、岗位、领域关键词，调用 Tavily（或仅生成查询计划），获取公司介绍、岗位职责、面试经验与难度、行业/技术大环境等情报。
-- **匹配数据（不打分）**：
-  - 规则层维度打分（技能、经验、领域、教育、软能力）与差距列表 `gaps`，作为**原始信号**；
-  - 句子级语义对齐（使用 Fast 模型）：为 JD 每一条职责/任职要求找到简历中可能对应的句子，仅生成“证据对”，不做任何评分或结论。
-- **大牛辩论与合议（核心分析层）**：
-  - 多个可配置的大牛 persona（如王川、Naval、特朗普），从不同 HR/用人方视角出发，基于 JD 原文、简历原文、匹配数据与 Tavily 情报，给出对“候选人”的竞争力判断与建议；
-  - 大牛角色和语气可通过 `.env` 中的 `DEBATE_PERSONAS` 控制；某些角色偏谨慎/悲观、某些偏长期乐观，整体风格接地气、贴合当前“行情偏冷、HC 紧缩”的市场环境；
-  - 最终由一个“主持人”节点对各大牛观点做合议，总结整体结论、关键要点和推荐策略。
-- **报告与入库**：按时间戳生成 Markdown 报告（JD 分析、简历分析、Tavily 报告、Matching 报告、大牛辩论报告）；可选将 Job / Resume / Analysis（含匹配与辩论结果）写入 SQLite。
+| 功能模块 | 说明 |
+|----------|------|
+| **JD / 简历解析** | 规则抽取（公司名、岗位名、地点等），报告中输出原文；图片/PDF 通过 Gemini Flash 多模态 OCR 提取文本，入口为 `input/` 或页面上传。 |
+| **Tavily 情报搜索** | 基于解析出的公司、岗位、领域关键词调用 Tavily（或仅生成查询计划），获取公司介绍、岗位职责、面试经验与难度、行业/技术大环境等情报。 |
+| **匹配数据（不打分）** | 规则层维度（技能、经验、领域、教育、软能力）与差距列表 `gaps` 作为原始信号；句子级语义对齐（Gemini）为 JD 每条职责/要求匹配简历句子，仅输出证据对，不做评分。 |
+| **大牛辩论与合议** | 可配置多角色 persona（如王川、Naval、特朗普等），从不同视角基于 JD/简历/匹配/Tavily 给出竞争力判断；每人随机看好/看空；主持人节点合议总结结论与推荐策略。 |
+| **报告与入库** | 按时间戳生成 Markdown 报告（JD、简历、Tavily、Matching、大牛辩论）；可选将 Job / Resume / Analysis 写入 SQLite。 |
 
 ---
 
@@ -30,22 +27,23 @@
 
 ```text
 resume_analysis_tool/
-├── example_data/           # 示例 JD、简历（可替换为自己的 md/txt）
+├── input/                  # JD 与简历统一入口（文件名含 jd/job、resume/cv，支持 PDF/图片）
 ├── src/
-│   ├── models/             # Pydantic 模型：ResumeProfile, JobProfile, MatchingResult, RewriteResult 等
-│   ├── parsers/            # JD 解析、简历解析（当前为轻量规则版，占位，不再调用 LLM）
-│   ├── llm/                # Gemini 封装（client）、Prompt 模板（prompts，包括大牛辩论/合议）
-│   ├── analysis/           # 匹配引擎（规则层 + 句子级语义对齐）、Tavily 搜索封装、简历重写（暂从主流程移除）
-│   ├── db/                 # SQLAlchemy 表、init_db、analysis_run_repo、rewritten_resume_repo
-│   └── cli/                # Typer 入口（当前为占位，主流程见 test_script.py）
+│   ├── models/             # Pydantic 模型：ResumeProfile, JobProfile, MatchingResult 等
+│   ├── parsers/            # JD 解析、简历解析（规则版，不调用 LLM）
+│   ├── llm/                # Gemini 封装、Prompt 模板、大牛人物库（debate_personas）
+│   ├── analysis/           # 匹配引擎（规则+语义对齐）、Tavily 搜索、简历重写（可选）
+│   ├── graph/              # LangGraph 流水线（解析 → Tavily → 匹配 → 大牛辩论 → 合议）
+│   ├── ocr/                # 图片/PDF 文字提取（Flash 多模态）
+│   └── db/                 # SQLAlchemy、init_db、analysis_run_repo
 ├── tests/                  # 单元测试
-├── docs/                   # 文档：上传 GitHub、报告与数据库映射
+├── docs/                   # 文档与 CHANGELOG
 ├── test_outputs/           # 每次运行生成的报告（按时间戳分子目录）
-├── data/                   # SQLite 数据库文件（.gitignore）
-├── test_script.py          # 一键运行：解析 → Tavily → 匹配（规则+语义对齐，仅数据） → 大牛辩论 → 报告（可选入库）
+├── data/                   # SQLite 数据库（.gitignore）
+├── main.py                 # 命令行入口：解析 → Tavily → 匹配 → 大牛辩论 → 报告（可选入库）
+├── app.py                  # Streamlit Web 入口
 ├── requirements.txt
-├── .env.example
-└── project_build_steps.md  # 构建步骤与产品思路
+└── .env.example
 ```
 
 ---
@@ -82,13 +80,13 @@ cp .env.example .env
 
 ### 3. 运行一次完整分析（CLI）
 
-使用示例数据（需在 `example_data/` 下放置 `jd_example_1.md`、`resume_example_1.md`，或修改 `test_script.py` 中的路径）：
+将 JD、简历放入项目根目录下的 **`input/`**（文件名需含 `jd` 或 `job`、`resume` 或 `cv`，支持 PDF 与常见图片格式），然后执行：
 
 ```bash
-python test_script.py
+python main.py
 ```
 
-流程：读取 JD 与简历 → 规则版解析（仅抽取基础字段，报告中输出原文）→ Tavily 情报搜索 → 匹配分析（规则层 + 句子级语义对齐，仅输出数据，不打分）→ 多位大牛辩论与合议 → 生成 Markdown 报告（JD/Tavily/Matching/Debate）→ 可选写入数据库。报告输出到 `test_outputs/<YYYYMMDD_HHMMSS>/`。
+流程：从 input 读取 JD/简历 → Flash 模型 OCR 提取文本 → 规则解析 → Tavily 情报搜索 → 匹配分析（规则层 + 句子级语义对齐，使用 Gemini）→ 大牛辩论与合议（每人随机看好/看空）→ 生成 Markdown 报告。报告输出到 `test_outputs/<YYYYMMDD_HHMMSS>/`。终端会打印每步使用的 API/模型。
 
 ### 4. 启用数据库（可选）
 
@@ -97,7 +95,7 @@ python test_script.py
 python -m src.db.init_db
 ```
 
-在 `.env` 中设置 `SAVE_TO_DB=true`，再次运行 `python test_script.py` 后会将当次分析的 Job、Resume、Analysis（含匹配原始数据与大牛辩论结果）写入 `data/resume_analysis.db`。
+在 `.env` 中设置 `SAVE_TO_DB=true`，再次运行 `python main.py` 后会将当次分析的 Job、Resume、Analysis（含匹配原始数据与大牛辩论结果）写入 `data/resume_analysis.db`。
 
 ---
 
@@ -125,17 +123,19 @@ python -m src.db.init_db
     - 句子级语义对齐结果（职责/任职要求 ↔ 简历句子）；
     - 大牛辩论与合议（每位大牛的观点 + 合议结论和推荐策略）。
 
-启动方式：
+启动方式（建议在项目 venv 下执行）：
 
 ```bash
-streamlit run app.py
+python3 -m streamlit run app.py
 ```
+
+按页面左侧「开始分析步骤」操作：准备文件（input 或上传）→ 解析 → 选择大牛 → 开始分析。若遇 `extra_items` 等报错，请用当前 venv 的 Python 启动并安装 `typing_extensions>=4.13`。
 
 ---
 
 ## 上传到 GitHub
 
-若尚未在 GitHub 建仓，可参考 [docs/upload_to_github.md](docs/upload_to_github.md)：创建空仓库后，在项目根目录执行 `git init`、`git add .`、`git commit`、`git remote add origin <URL>`、`git push -u origin main`。`.gitignore` 已排除 `.env`、`data/`、`venv/`、`test_outputs/*` 等。
+若尚未在 GitHub 建仓，可参考 [docs/upload_to_github.md](docs/upload_to_github.md)：创建空仓库后，在项目根目录执行 `git init`、`git add .`、`git commit`、`git remote add origin <URL>`、`git push -u origin main`。`.gitignore` 已排除 `.env`、`data/`、`venv/`、`example_data/`、`test_outputs/*` 等。
 
 ---
 
@@ -151,14 +151,11 @@ streamlit run app.py
 
 ## Star History（示例）
 
-> 说明：下面的 Star 趋势图使用的是 `star-history.com` 的公开服务。  
-> 等项目推送到 GitHub 后，请将其中的 `YOUR_GITHUB_USERNAME/resume_analysis_tool` 替换为真实仓库路径。
-
-[![Star History Chart](https://api.star-history.com/svg?repos=YOUR_GITHUB_USERNAME/resume_analysis_tool&type=Date)](https://star-history.com/#YOUR_GITHUB_USERNAME/resume_analysis_tool&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=qchen34/resume_analysis_tool&type=Date)](https://star-history.com/#qchen34/resume_analysis_tool&Date)
 
 ---
 
 ## License
 
 本项目采用 **MIT License** 开源许可协议，允许在保留版权和许可声明的前提下自由使用、修改和分发。  
-如需在公司内部或商业项目中集成本工具，请遵守 MIT 协议要求。*** End Patch***}"/>
+如需在公司内部或商业项目中集成本工具，请遵守 MIT 协议要求。

@@ -117,7 +117,7 @@ job_id, resume_id, analysis_id, rewritten_id = save_analysis_run(
 # 可将 analysis_id 写入报告或日志，便于回溯
 ```
 
-- **test_script.py**：若设置环境变量 `SAVE_TO_DB=true`，脚本会在生成报告后调用上述函数并打印 `analysis_id`。
+- **main.py**：若设置环境变量 `SAVE_TO_DB=true`，脚本会在生成报告后调用上述函数并打印 `analysis_id`。
 - 入库前请确保已执行 `python -m src.db.init_db` 完成建表。
 
 ### 方式二：单表写入

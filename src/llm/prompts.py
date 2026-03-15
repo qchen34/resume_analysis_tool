@@ -136,17 +136,27 @@ DEBATE_SYSTEM_PROMPT = (
     "{\n"
     '  \"persona\": \"当前扮演的大牛角色（英文代号，如 wangchuan/naval/trump）\",\n'
     '  \"display_name\": \"在中文报告中展示的名字\",\n'
-    '  \"verdict\": \"看好/一般/不太看好 之一\",\n'
+    '  \"verdict\": \"看好/一般/看空/不太看好 之一（须与本次立场一致）\",\n'
+    '  \"stance\": \"本次被指定的立场：看好 或 看空\",\n'
     '  \"confidence\": 0.0-1.0,\n'
     '  \"analysis\": \"用 3-6 段自然中文详细说明理由，引用 JD 要求和简历里的关键点，说明为什么这样判断。\",\n'
     '  \"advice_to_candidate\": \"给候选人的实用建议，可以包括是否值得投、如何准备面试、简历要补什么等。\"\n'
     "}\n"
 )
 
+# 大牛辩论时由调用方注入：本次立场（看好/看空），用于约束 verdict
+DEBATE_STANCE_INSTRUCTION = (
+    "本次你的立场必须为：{stance}。"
+    "若立场为「看好」，verdict 只能从「看好」「一般」中选；"
+    "若立场为「看空」，verdict 只能从「看空」「不太看好」中选。"
+    "请在 analysis 中自然体现该立场，并输出 stance 字段为「{stance}」。"
+)
+
 
 DEBATE_SUMMARY_SYSTEM_PROMPT = (
     "你是一名主持人，需要根据多位大牛嘉宾对候选人的点评，给出一个综合结论。\n"
-    "输入是一个 JSON 数组，里面是每位嘉宾的发言（persona/verdict/analysis 等）。\n"
+    "输入是一个 JSON 数组，里面是每位嘉宾的发言（persona/display_name/verdict/stance/analysis 等）；"
+    "其中 stance 为本次该嘉宾被随机指定的立场「看好」或「看空」。\n"
     "请你：\n"
     "1）先总结各位嘉宾的核心观点，有哪些共识和分歧；\n"
     "2）给出一个整体结论（例如很值得冲/可以尝试/性价比一般/不太建议等），\n"

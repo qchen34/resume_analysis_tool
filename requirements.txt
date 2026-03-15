@@ -4,10 +4,9 @@ SQLAlchemy>=2.0.0
 typer>=0.12.0
 pytest>=8.0.0
 google-genai
+typing_extensions>=4.13
 streamlit>=1.55.0
 langgraph>=0.2.0
 tavily-python
-pdfplumber
-pytesseract
-Pillow
+# OCR 已改为使用 GEMINI_MODEL（Flash）多模态识别，不再依赖本地 OCR 库
 

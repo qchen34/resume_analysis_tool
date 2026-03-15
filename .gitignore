@@ -17,9 +17,8 @@ dist/
 *.db
 data/
 
-# Local examples with real data (do not commit)
-example_data/resume_example_1.md
-example_data/jd_example_1.md
+# 示例数据目录（不提交；JD/简历统一从 input 入口）
+example_data/
 
 # Test artifacts
 test_outputs/*
