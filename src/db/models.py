@@ -60,12 +60,20 @@ class Analysis(Base):
     overall_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     user_competency_tags: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # 大牛辩论与合议、Tavily 情报（可选，便于历史回溯与投递关联）
+    debate_rounds_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tavily_insights_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    final_competitiveness_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped[Optional[User]] = relationship(back_populates="analyses")
     resume: Mapped["Resume"] = relationship(back_populates="analyses")
     job: Mapped["Job"] = relationship(back_populates="analyses")
     rewritten_resumes: Mapped[list["RewrittenResume"]] = relationship(back_populates="analysis")
+    applications: Mapped[list["Application"]] = relationship(
+        back_populates="analysis",
+    )
 
 
 class RewrittenResume(Base):
@@ -81,4 +89,40 @@ class RewrittenResume(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     analysis: Mapped["Analysis"] = relationship(back_populates="rewritten_resumes")
+
+
+class Application(Base):
+    """投递记录（投递 Tracker）：一次投递对应一条记录，可关联某次分析。"""
+
+    __tablename__ = "applications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    analysis_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("analyses.id"), nullable=True, index=True
+    )  # 可空：支持先记投递后补分析
+
+    company: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    role_title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    jd_summary_or_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    salary_range: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    platform: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # 投递平台
+
+    initiated_contact: Mapped[Optional[bool]] = mapped_column(nullable=True)  # 是否主动沟通
+    resume_sent: Mapped[Optional[bool]] = mapped_column(nullable=True)  # 是否已投递简历
+    has_reply: Mapped[Optional[bool]] = mapped_column(nullable=True, index=True)  # 是否有回复
+    has_interview: Mapped[Optional[bool]] = mapped_column(nullable=True, index=True)  # 是否邀约面试
+    interview_rounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    interview_feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    offer_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    analysis: Mapped[Optional["Analysis"]] = relationship(
+        back_populates="applications",
+        foreign_keys=[analysis_id],
+    )
 

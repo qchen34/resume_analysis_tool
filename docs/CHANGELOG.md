@@ -2,6 +2,35 @@
 
 > 本文件用于记录 Resume Analysis Tool 在不同阶段的**架构演进、主要改动**以及**下一步计划**，方便后续回顾与协作。
 
+## 2026-03-17：缓存与投递 Tracker 增强（V1 上线准备）
+
+- **OCR 与分析缓存**
+  - OCR 层增加文件级缓存：`extract_text_with_flash` 以文件内容哈希为 key，将 Flash 多模态识别出的纯文本缓存在 `test_outputs/cache_ocr/` 下；同一 JD/简历文件（内容不变）在 CLI 与 Streamlit 中复用缓存文本，避免重复消耗 OCR token。
+  - 分析层 run 级缓存：以 `jd_text + "\n====RESUME====\n" + resume_text` 的 sha256 为 key，将结构化 JD/简历、Tavily 结果、匹配结果、大牛辩论与合议结论统一缓存在 `test_outputs/cache/<hash>.json` 中；CLI 和 Streamlit 入口均可在 `FORCE_REANALYZE=false` 时复用该缓存，跳过 Tavily/匹配/辩论。
+  - `main.py` 终端输出增强：在每个阶段打印输入概要（文件路径、原文预览、结构化字段）、调用的模型/API、缓存命中情况与阶段完成提示，使 CLI 日志更接近结构化运行日志。
+
+- **Streamlit Web 前端与运行选项**
+  - `app.py` 顶层拆分为两个平行模块：`JD 与简历分析` 与 `投递记录 (Tracker)`；Tracker 模块独立于分析流程，可单独使用。
+  - 在分析 Tab 中新增「运行选项」：`保存到数据库（SAVE_TO_DB）` 与 `强制重新分析（FORCE_REANALYZE）` 勾选框，默认值来自 `.env`，前端可按次 override；本次分析是否入库不再仅由后端 env 决定。
+  - Web 侧在分析完成后同样写入 run 级缓存，与 CLI 共享 `test_outputs/cache` 目录。
+
+- **投递 Tracker：applications 表与可编辑表格**
+  - `applications` 表作为投递 Tracker 的唯一数据源：analysis_id + 公司、职位、JD 摘要/链接、地点、薪资范围、平台、回复/面试/Offer 状态等字段（详见 `docs/tracker_implementation.md`）。
+  - 分析结束后：CLI 与 Streamlit 默认自动调用 `create_from_analysis(analysis_id)`，基于当次 `Analysis` + `Job` 预填公司/职位/地点/JD 摘要，并写入 `applications` 表；用户也可通过 Web 端「将本次分析记为一次投递」或「新增投递（使用本次分析结果预填）」手动创建记录。
+  - Streamlit Tracker Tab 使用 `st.data_editor` 直接展示并编辑 `applications` 列表：用户可在表格中修改公司/职位/地点/薪资/平台/回复与面试状态/面试轮次/Offer 文本；点击「保存表格中所有修改」后，逐行 diff 并调用 `update_application` 同步更新数据库。
+  - Tracker Tab 上方展示投递统计（投递数/回复率/面试率/Offer 数）与「生成策略建议」按钮，调用 `run_strategy_summary` 生成策略文案。
+
+- **数据库去重与初始化入口**
+  - `save_analysis_run` 中对 Job/Resume 增加去重策略：相同公司/岗位/地点且 JD 原文完全一致时复用已有 Job 记录；相同 user_id 且简历原文完全一致时复用已有 Resume 记录，避免大量重复行；Analysis 仍为每次分析新建一条，指向可能复用的 Job/Resume。
+  - 数据库初始化入口下沉到 `src/db/__init__.py`：首次导入 `src.db` 包时调用 `init_database(drop_existing=False)`，自动创建缺失表（含 applications），CLI 与 Streamlit 共用，不再在 `app.py` 中单独维护初始化逻辑。
+
+- **文档与清理**
+  - 新增并完善 `docs/tracker_implementation.md`，系统性说明投递 Tracker 的表结构、数据流与前后端协作方式。
+  - 清理中间规划文档：删除 `docs/plan_frontend_and_tracker.md` 与 `docs/web_ui_plan.md`，保留最终实现文档与 `report_to_db_mapping.md`、`tavily_and_external_sources.md`、`debate_personas_intro.md` 作为架构与行为说明。
+
+---
+
+
 ---
 
 ## 2026-03-14：第一阶段收尾与上线准备
@@ -19,6 +48,31 @@
   - CHANGELOG：补充本阶段收尾条目；报告体系与 input 说明改为 main.py 与唯一入口表述。
 
 ---
+
+## 2026-03-14：Backlog 落地（Tavily + 投递 Tracker + 策略）
+
+- **Tavily 优化（阶段 0）**
+  - 查询构造：在 `tavily_search.py` 中为各类型查询增加「招聘」「岗位要求」「面试」「面经」等约束词，提高与求职/招聘的相关性。
+  - 结果过滤：对摘要做关键词过滤（`TAVILY_FILTER_RESULTS`，默认 true），不含招聘/求职相关关键词时替换为提示文案。
+  - 文档：`docs/tavily_and_external_sources.md` 记录优化方式与脉脉/猎聘/Boss 等外部数据源调研结论（当前无开放 API，以 Tavily 优化为主）。
+- **数据库与分析持久化（阶段 1）**
+  - `analyses` 表新增 `debate_rounds_json`、`tavily_insights_json`、`final_competitiveness_json`；`save_analysis_run` 支持传入并写入上述字段；main.py 与 app.py 分析完成后均传入辩论与 Tavily 结果。
+  - 新增 `applications` 表（投递记录）：analysis_id、公司、职位、平台、流程状态等；与 Analysis 一对多关联。
+  - 分析默认入库：`SAVE_TO_DB` 默认改为 `true`，保留 `false` 以兼容仅跑报告不存库。
+- **投递 Tracker 与闭环（阶段 2）**
+  - `src/db/application_repo.py`：create、get_by_id、list_applications（按公司/状态/时间筛选）、update、delete、create_from_analysis（从分析预填）。
+  - Streamlit「投递记录」Tab：列表展示、新增投递（可勾选「使用本次分析结果预填」）、从概览页「将本次分析记为一次投递」按钮写入并关联 analysis_id。
+- **统计与策略评估（阶段 3）**
+  - `application_repo.get_stats(from_date, to_date)`：投递数、回复数、面试数、Offer 数及比率。
+  - `src/analysis/strategy_summary.py`：`run_strategy_summary(stats_text, history_summary)` 调用 LLM 生成策略建议；prompt 见 `STRATEGY_SUMMARY_SYSTEM_PROMPT`。
+  - Streamlit「投递记录」页：统计周期（7 天/30 天/全部）、指标卡片、「生成策略建议」按钮展示文案。
+- **文档与配置（阶段 4）**
+  - `docs/report_to_db_mapping.md`：补充 analyses 新字段与 applications 表结构及与分析的关联；入库顺序与 main/app 入库说明。
+  - `.env.example`：SAVE_TO_DB 默认 true、TAVILY_FILTER_RESULTS 注释。
+
+---
+
+
 
 ## 2026-03-12：LangGraph + 大牛辩论版本
 
@@ -75,69 +129,48 @@
 
 ## 下一步计划（Backlog）
 
-> 以下为下一阶段重点方向，尚未实现。按**模块**划分，每项给出目标、实现要点与依赖关系，便于排期与落地。
+> 以下为下一阶段重点方向，尚未实现。当前 V1 已完成缓存、投递 Tracker、DB 去重与 Web 端配置入口，本节主要关注后续演进。
 
 ---
 
-### 一、前端升级与投递复盘入口
+### 一、前端体验与可视化升级
 
 | 目标 | 实现要点 |
 |------|----------|
-| **前端技术栈迁移** | 将 Streamlit 替换为 npm 技术栈（如 React/Vue + 组件库），便于长期维护与更丰富的交互。 |
-| **投递复盘能力** | 在分析结果页增加「投递复盘」入口：用户完成一次 JD+简历分析后，可选择「已按当前简历投递该岗位」，将当次分析的关键信息（公司、职位、JD 摘要、匹配结论等）写入投递记录，与下文「投递 Tracker」打通。 |
+| **更丰富的可视化** | 在 Streamlit 中增加简易图表（如按周/月的投递/回复/面试/Offer 趋势折线图，按公司/岗位聚合的条形图），帮助更直观地查看投递表现。 |
+| **分析结果导览优化** | 在 Web 分析结果页增加「一键跳转」入口到对应的 Markdown 报告（本地路径或下载），并提供「复制摘要」按钮，方便粘贴到笔记或 Notion。 |
 
-**依赖**：需先有投递 Tracker 数据模型与 API，前端才能写入/读取投递记录。
+**依赖**：现有 Tracker 数据模型与分析报告体系已就绪，仅需前端增强。
 
 ---
 
-### 二、数据库维护与分析持久化
+### 二、数据库维护与索引优化
 
 | 目标 | 实现要点 |
 |------|----------|
-| **每次分析必存库** | 当前为可选（`SAVE_TO_DB`）；改为默认或强制将每次分析（Job / Resume / Matching / Debate 结果）写入数据库，便于历史回溯与后续统计。 |
-| **库表与索引优化** | 明确分析记录与投递记录的关系（如一条分析可关联多条投递）；按查询场景（按时间、按公司、按状态）设计索引与归档策略。 |
+| **索引与查询优化** | 根据常用查询（按时间、按公司、按岗位、按状态）为 `analyses` 和 `applications` 添加合理索引，避免数据规模上来后查询变慢。 |
+| **简单归档策略** | 设计按时间归档历史分析与投递记录的方案（如导出为 JSON/CSV 并从主库软删除），保持主库体量可控。 |
 
-**依赖**：与「投递 Tracker」共用同一数据库，需统一设计表结构。
+**依赖**：基于当前表结构，可逐步扩展，不影响现有功能。
 
 ---
 
-### 三、投递 Tracker（投递复盘表）
+### 三、投递数据整理与策略分析（进阶版）
 
 | 目标 | 实现要点 |
 |------|----------|
-| **核心实体** | 以「一次投递」为记录单位，维护于数据库中。 |
-| **字段设计（建议）** | **基础**：公司、职位、JD 摘要或链接、地点、薪资范围、投递平台；**流程**：是否主动沟通、是否已投递简历、是否有回复、是否邀约面试、面试轮次、面试反馈、Offer 详情；**关联**：关联当次「简历+JD 分析」的 analysis_id，便于回查匹配与辩论结论。 |
-| **CRUD 与列表** | 支持新增、编辑、删除、列表筛选（按状态/时间/公司）；列表页可展示关键字段与对应分析报告入口。 |
+| **多维度统计（进阶）** | 在现有整体统计基础上，增加按公司、岗位类型、城市等维度的拆分统计，并支持按时间区间过滤。 |
+| **策略分析增强** | 在 `run_strategy_summary` 的基础上，进一步融合 `analyses` 中的大牛合议结论与 Tavily 情报，让策略建议更贴合「哪些岗位/公司更适合继续投递」。 |
 
-**依赖**：数据库表设计需与「分析持久化」一致；前端需有投递列表与表单页。
+**依赖**：依赖 Tracker 数据与历史分析数据的进一步积累；需微调 prompt 与统计结构。
 
 ---
 
-### 四、投递数据整理与策略分析
+### 四、前后端分离与长远演进
 
 | 目标 | 实现要点 |
 |------|----------|
-| **多维度统计** | 基于 Tracker 数据，按**日 / 周 / 月**等维度做汇总：投递数、回复率、面试率、Offer 数等；可配合简单图表展示。 |
-| **大牛策略评估** | 将汇总后的投递表现（如「本周投递 10 家、2 家回复、1 家面试」）与历史分析结论作为输入，再次调用大牛辩论或单独「策略总结」节点，输出：当前投递策略评估、优化建议（如侧重行业/岗位类型、简历修改建议）。 |
+| **前端技术栈迁移（可选）** | 将当前 Streamlit UI 渐进式迁移到 npm 技术栈（如 React/Vue + 组件库），将现有分析/投递/统计/策略接口封装为独立 API（FastAPI 等），提升长期维护性。 |
+| **多用户与鉴权** | 在现有单用户基础上引入简单用户体系（auth + user_id），使不同用户的简历/分析/投递记录互相隔离，为未来多端使用做准备。 |
 
-**依赖**：依赖 Tracker 数据积累；需设计「策略分析」的输入输出格式与 prompt。
-
----
-
-### 五、分析与投递的入口联动
-
-| 目标 | 实现要点 |
-|------|----------|
-| **分析 → 投递** | 在「分析完成」页提供明确入口：「将本次分析记为一次投递」。可预填公司、职位、JD 摘要等（来自当次分析），用户补充平台、是否已投递、后续状态等后写入 Tracker。 |
-| **是否已投递的勾选** | 在发起分析时或分析结果页，增加选项「本次分析对应岗位是否已投递」：若勾选，则与上一条联动，自动或引导用户写入/更新一条投递记录，并关联本次 analysis_id。 |
-
-**依赖**：前端需同时具备「分析结果页」与「投递 Tracker」模块；后端需提供「创建投递并关联分析」的接口。
-
----
-
-### 优先级与实施顺序建议
-
-1. **先**：数据库表设计（分析持久化 + 投递 Tracker 表结构）→ 后端 API（分析入库、投递 CRUD、关联分析）。
-2. **再**：投递 Tracker 的列表与表单（可先保留 Streamlit 或简单 HTML），实现「分析完成 → 标记为投递并写入 Tracker」的闭环。
-3. **然后**：按周/月统计与简单可视化；再接入「大牛策略评估」。
-4. **最后**：前端迁移到 npm 技术栈，并统一整合分析、投递、统计、策略四个模块的动线。
+**依赖**：需要先稳定现有 CLI + Web 行为，并为 API 层抽象预留接口；前端迁移可作为后续独立项目推进。

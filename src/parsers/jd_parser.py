@@ -1,9 +1,59 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Tuple
 
 from src.models.schemas import JobProfile
+
+
+def _strip_json_block(text: str) -> str:
+    """去掉 LLM 可能返回的 ```json ... ``` 包裹。"""
+    text = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return text
+
+
+def parse_jd_with_llm(raw_text: str) -> Tuple[JobProfile, str]:
+    """
+    使用 LLM 将 JD 原文解析为结构化 JobProfile，保证公司名、岗位等字段准确，供 Tavily 等下游使用。
+    返回 (job_profile, json_str)，json_str 用于报告与缓存。
+    """
+    from src.llm.client import llm_client
+    from src.llm.prompts import JD_PARSE_SYSTEM_PROMPT
+
+    if not (raw_text or raw_text.strip()):
+        return JobProfile(), json.dumps({"raw_text": "", "parsed": {}}, ensure_ascii=False, indent=2)
+
+    messages = [
+        {"role": "system", "content": JD_PARSE_SYSTEM_PROMPT},
+        {"role": "user", "content": f"请将以下 JD 文本解析为结构化 JSON：\n\n{raw_text.strip()}"},
+    ]
+    response = llm_client.chat(messages)
+    cleaned = _strip_json_block(response)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    # 只保留 JobProfile 支持的字段，避免 Pydantic 报错
+    allowed = {
+        "role_title", "company", "level", "department", "location",
+        "must_have_skills", "nice_to_have_skills", "responsibilities",
+        "domain_keywords", "soft_skills", "values_keywords", "experience_requirements",
+    }
+    filtered = {k: v for k, v in data.items() if k in allowed}
+    job_profile = JobProfile.model_validate(filtered)
+    json_str = json.dumps(
+        {"raw_text": raw_text[:500] + ("..." if len(raw_text) > 500 else ""), "parsed": job_profile.model_dump(mode="json")},
+        ensure_ascii=False,
+        indent=2,
+    )
+    return job_profile, json_str
 
 
 def parse_jd(raw_text: str) -> Tuple[JobProfile, str]:

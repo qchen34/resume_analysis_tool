@@ -41,11 +41,17 @@ def save_analysis_run(
     rewrite_result: Optional[RewriteResult] = None,
     user_id: Optional[int] = None,
     llm_model: Optional[str] = None,
+    debate_rounds: Optional[list] = None,
+    tavily_insights: Optional[Dict[str, Any]] = None,
+    final_competitiveness: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int, int, Optional[int]]:
     """
     将一次分析运行的完整结果写入数据库。
 
-    顺序：插入 Job → 插入 Resume → 插入 Analysis → 若提供 rewrite_result 则插入 RewrittenResume。
+    顺序：插入（或复用） Job → 插入（或复用） Resume → 插入 Analysis → 若提供 rewrite_result 则插入 RewrittenResume。
+    - Job 去重策略：同一公司 / 岗位 / 地点 且 raw_jd_text 完全一致时，复用已有 Job 记录；
+    - Resume 去重策略：raw_resume_text 完全一致时，复用已有 Resume 记录。
+    debate_rounds / tavily_insights / final_competitiveness 写入 Analysis 的 JSON 列。
 
     返回:
         (job_id, resume_id, analysis_id, rewritten_resume_id)
@@ -53,31 +59,48 @@ def save_analysis_run(
     """
     db = SessionLocal()
     try:
-        job = Job(
-            title=job_profile.role_title,
-            company=job_profile.company,
-            level=job_profile.level,
-            location=job_profile.location,
-            raw_jd_text=jd_text,
-            job_profile_json=job_profile.model_dump(mode="json"),
+        # 1) Job 去重：同公司/岗位/地点 + 完全相同的 JD 原文，则复用已有 Job
+        job = (
+            db.query(Job)
+            .filter(
+                Job.title == job_profile.role_title,
+                Job.company == job_profile.company,
+                Job.location == job_profile.location,
+                Job.raw_jd_text == jd_text,
+            )
+            .order_by(Job.created_at.desc())
+            .first()
         )
-        db.add(job)
-        db.flush()
+        if job is None:
+            job = Job(
+                title=job_profile.role_title,
+                company=job_profile.company,
+                level=job_profile.level,
+                location=job_profile.location,
+                raw_jd_text=jd_text,
+                job_profile_json=job_profile.model_dump(mode="json"),
+            )
+            db.add(job)
+            db.flush()
 
-        resume = Resume(
-            user_id=user_id,
-            raw_resume_text=resume_text,
-            resume_profile_json=resume_profile.model_dump(mode="json"),
+        # 2) Resume 去重：完全相同的简历原文则复用
+        resume = (
+            db.query(Resume)
+            .filter(
+                Resume.user_id == user_id,
+                Resume.raw_resume_text == resume_text,
+            )
+            .order_by(Resume.created_at.desc())
+            .first()
         )
-        db.add(resume)
-        db.flush()
-
-        overall_score = None
-        if matching_result.overall_score is not None:
-            try:
-                overall_score = int(round(matching_result.overall_score))
-            except (TypeError, ValueError):
-                pass
+        if resume is None:
+            resume = Resume(
+                user_id=user_id,
+                raw_resume_text=resume_text,
+                resume_profile_json=resume_profile.model_dump(mode="json"),
+            )
+            db.add(resume)
+            db.flush()
 
         analysis = Analysis(
             user_id=user_id,
@@ -86,7 +109,10 @@ def save_analysis_run(
             matching_result_json=_matching_result_to_json(
                 matching_result, matching_refined
             ),
-            overall_score=overall_score,
+            overall_score=None,
+            debate_rounds_json=debate_rounds if debate_rounds is not None else None,
+            tavily_insights_json=tavily_insights,
+            final_competitiveness_json=final_competitiveness,
         )
         db.add(analysis)
         db.flush()

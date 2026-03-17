@@ -7,8 +7,8 @@ import os
 from langgraph.graph import StateGraph, END
 
 from src.llm.client import llm_client
-from src.parsers.jd_parser import parse_jd
-from src.parsers.resume_parser import parse_resume
+from src.parsers.jd_parser import parse_jd_with_llm
+from src.parsers.resume_parser import parse_resume_with_llm
 from src.analysis.matching_engine import compute_matching_with_details
 from src.analysis.tavily_search import run_tavily_search
 from src.models.schemas import JobProfile, ResumeProfile, MatchingResult
@@ -51,7 +51,7 @@ def _parse_jd_node(state: AnalysisState) -> AnalysisState:
     if not jd_text.strip():
         return {}
     try:
-        job_profile, _ = parse_jd(jd_text)
+        job_profile, _ = parse_jd_with_llm(jd_text)
         return {"job_profile": job_profile}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"parse_jd failed: {exc}"}
@@ -62,7 +62,7 @@ def _parse_resume_node(state: AnalysisState) -> AnalysisState:
     if not resume_text.strip():
         return {}
     try:
-        resume_profile, _ = parse_resume(resume_text)
+        resume_profile, _ = parse_resume_with_llm(resume_text)
         return {"resume_profile": resume_profile}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"parse_resume failed: {exc}"}

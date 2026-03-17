@@ -54,12 +54,15 @@
 | `resume_id` | 本次分析使用的简历记录 id | ForeignKey → resumes.id |
 | `job_id` | 本次分析使用的 JD 记录 id | ForeignKey → jobs.id |
 | `user_id` | 若与用户体系打通 | ForeignKey，可选 |
-| `matching_result_json` | 完整匹配结果，供报告回溯与二次分析 | JSON：`matching_result.model_dump(mode="json")`，内含 overall_score、dimensions、gaps、explanation、dimension_explanations 等 |
+| `matching_result_json` | 完整匹配结果，供报告回溯与二次分析 | JSON：`matching_result.model_dump(mode="json")`，内含 overall_score、dimensions、gaps 等 |
 | `overall_score` | 综合匹配分（0–100），便于排序/筛选 | Integer，可从 `matching_result.overall_score` 取整存入；若为 None 可存 NULL |
 | `user_competency_tags` | 用户自填或后续打标签 | JSON，可选 |
+| `debate_rounds_json` | 大牛辩论各轮结果（含 persona、verdict、stance、analysis 等） | JSON 数组，可选 |
+| `tavily_insights_json` | Tavily 搜索计划与结果摘要 | JSON，可选 |
+| `final_competitiveness_json` | 合议总结（overall_verdict、summary_points、suggested_strategy） | JSON，可选 |
 | `created_at` | 分析完成时间 | DateTime，默认当前时间 |
 
-**说明**：`matching_report.md` 中的核心内容（MatchingResult + 可选 responsibility_coverage / skill_coverage）应完整放入 `matching_result_json`。若希望 responsibility_coverage、skill_coverage 也进库，可在合并进 `matching_refined` 后，把该 dict 一并序列化进 `matching_result_json`（例如在写入 DB 前把 `matching_refined` 中这两项合并进同一 JSON），或单独扩展字段；当前表结构用单 JSON 存整份匹配相关结果即可。
+**说明**：`matching_report.md` 中的核心内容应完整放入 `matching_result_json`。`debate_rounds_json` / `tavily_insights_json` / `final_competitiveness_json` 便于历史回溯与投递记录关联时回查分析结论。
 
 ---
 
@@ -77,12 +80,38 @@
 
 ---
 
+### 5. applications 表（投递记录 / 投递 Tracker）
+
+| 入库字段 | 说明 |
+|----------|------|
+| `id` | 主键 |
+| `analysis_id` | 关联的分析记录 id（ForeignKey → analyses.id），可空，支持先记投递后补分析 |
+| `company` | 公司名称 |
+| `role_title` | 职位名称 |
+| `jd_summary_or_link` | JD 摘要或链接 |
+| `location` | 地点 |
+| `salary_range` | 薪资范围 |
+| `platform` | 投递平台（如 Boss、拉勾） |
+| `initiated_contact` | 是否主动沟通 |
+| `resume_sent` | 是否已投递简历 |
+| `has_reply` | 是否有回复 |
+| `has_interview` | 是否邀约面试 |
+| `interview_rounds` | 面试轮次 |
+| `interview_feedback` | 面试反馈 |
+| `offer_details` | Offer 详情 |
+| `created_at` / `updated_at` | 创建/更新时间 |
+
+**说明**：一条分析可对应多条投递记录（同一岗位多次跟进等）。通过 `analysis_id` 可回查当次分析的匹配与辩论结论。仓储层见 `src.db.application_repo`。
+
+---
+
 ## 三、入库顺序与依赖
 
 1. **Job**：无依赖，先插入，得到 `job_id`。  
 2. **Resume**：无依赖（或依赖 `user_id`），插入后得到 `resume_id`。  
 3. **Analysis**：依赖 `resume_id`、`job_id`，插入后得到 `analysis_id`；写入时把 `matching_result`（及可选 `matching_refined` 中额外字段）序列化进 `matching_result_json`。  
-4. **RewrittenResume**：依赖 `analysis_id`，插入重写结果与 `changes_json`。
+4. **RewrittenResume**：依赖 `analysis_id`，插入重写结果与 `changes_json`。  
+5. **Application**：可选，依赖 `analysis_id`（可空）；由用户在前端或 CLI 在「分析完成」后创建，或单独新增投递记录。
 
 ---
 
@@ -117,8 +146,9 @@ job_id, resume_id, analysis_id, rewritten_id = save_analysis_run(
 # 可将 analysis_id 写入报告或日志，便于回溯
 ```
 
-- **main.py**：若设置环境变量 `SAVE_TO_DB=true`，脚本会在生成报告后调用上述函数并打印 `analysis_id`。
-- 入库前请确保已执行 `python -m src.db.init_db` 完成建表。
+- **main.py**：默认 `SAVE_TO_DB=true`，脚本会在生成报告后调用上述函数并打印 `analysis_id`；设 `SAVE_TO_DB=false` 可跳过入库。
+- **app.py**：Web 分析完成后若 `SAVE_TO_DB` 为 true，同样会调用 `save_analysis_run`（含 `debate_rounds`、`tavily_insights`、`final_competitiveness`），并将 `last_analysis_id` 存入 session，供「将本次分析记为一次投递」使用。
+- 入库前请确保已执行 `python -m src.db.init_db` 完成建表。若已有旧库，新增的 `analyses` 列与 `applications` 表需通过迁移或重新建表生效。
 
 ### 方式二：单表写入
 

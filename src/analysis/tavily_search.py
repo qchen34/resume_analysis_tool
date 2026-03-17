@@ -7,6 +7,9 @@ from tavily import TavilyClient
 
 from src.models.schemas import JobProfile
 
+# 结果过滤：摘要中至少包含其一则保留，减少与招聘/求职无关的噪音（可通过 TAVILY_FILTER_RESULTS=false 关闭）
+_RELEVANCE_KEYWORDS = ("招聘", "求职", "面试", "岗位", "公司", "JD", "简历", "职位", "面经", "offer", "入职")
+
 
 def _build_search_plan(job: JobProfile) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
     """
@@ -19,22 +22,22 @@ def _build_search_plan(job: JobProfile) -> Tuple[List[Dict[str, str]], Dict[str,
 
     queries: List[Dict[str, str]] = []
 
-    # 1. 公司层面：公司介绍 / 背景
+    # 1. 公司层面：介绍、规模、人数、融资/市值（便于后续总结公司画像）
     if company:
         queries.append(
             {
                 "type": "company_overview",
-                "query": f"{company} 公司 介绍 背景 业务",
+                "query": f"{company} 公司 介绍 背景 业务 规模 人数 融资 市值 招聘",
                 "keywords": company,
             }
         )
 
-    # 2. 岗位层面：岗位职责 / 日常工作
+    # 2. 岗位层面：岗位职责 / 任职要求（加「招聘」「岗位要求」）
     if company and role:
         queries.append(
             {
                 "type": "role_detail",
-                "query": f"{company} {role} 岗位 职责 工作 内容",
+                "query": f"{company} {role} 招聘 岗位 职责 任职要求 工作内容",
                 "keywords": f"{company} | {role}",
             }
         )
@@ -42,17 +45,17 @@ def _build_search_plan(job: JobProfile) -> Tuple[List[Dict[str, str]], Dict[str,
         queries.append(
             {
                 "type": "role_detail",
-                "query": f"{role} 岗位 职责 工作 内容",
+                "query": f"{role} 招聘 岗位 职责 任职要求 工作内容",
                 "keywords": role,
             }
         )
 
-    # 3. 面试相关：面试经验 / 难度 / 高频问题
+    # 3. 面试相关：面试经验 / 难度 / 高频问题（加「面试」强化）
     if company and role:
         queries.append(
             {
                 "type": "interview_experience",
-                "query": f"{company} {role} 面试 经验 难度 高频 问题",
+                "query": f"{company} {role} 面试 经验 难度 面经 高频问题",
                 "keywords": f"{company} | {role}",
             }
         )
@@ -60,18 +63,18 @@ def _build_search_plan(job: JobProfile) -> Tuple[List[Dict[str, str]], Dict[str,
         queries.append(
             {
                 "type": "interview_experience",
-                "query": f"{company} 面试 经验 难度 高频 问题",
+                "query": f"{company} 面试 经验 面经 难度",
                 "keywords": company,
             }
         )
 
-    # 4. 行业 / 技术大环境：使用 JD 中的 domain_keywords
+    # 4. 行业 / 技术大环境：趋势、主要玩家、竞争格局（便于判断行业梯队）
     if domain_keywords:
         top_keywords = " ".join(domain_keywords[:5])
         queries.append(
             {
                 "type": "industry_trend",
-                "query": f"{top_keywords} 行业 大环境 技术 趋势",
+                "query": f"{top_keywords} 行业 技术 趋势 主要玩家 排名 竞争格局 人才需求",
                 "keywords": top_keywords,
             }
         )
@@ -143,6 +146,10 @@ def run_tavily_search(job: JobProfile) -> Dict[str, Any]:
                 if not url:
                     continue
                 links.append({"title": title, "url": url})
+            # 可选：仅保留与招聘/求职相关的摘要（TAVILY_FILTER_RESULTS 默认 true）
+            filter_enabled = os.getenv("TAVILY_FILTER_RESULTS", "true").strip().lower() == "true"
+            if filter_enabled and summary and not any(kw in summary for kw in _RELEVANCE_KEYWORDS):
+                summary = "(摘要未包含招聘/求职相关关键词，已过滤；可设 TAVILY_FILTER_RESULTS=false 关闭)"
             search_results.append(
                 {
                     "type": q_type,

@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
 import os
+import time
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from dataclasses import dataclass
 
-
 load_dotenv()
+
+# 可重试的异常：Gemini 调用时服务端断开、连接失败、超时等瞬时错误（由 httpx/httpcore 抛出）
+try:
+    import httpx
+    _RETRYABLE = [httpx.RemoteProtocolError, httpx.ConnectError]
+    if hasattr(httpx, "TimeoutException"):
+        _RETRYABLE.append(httpx.TimeoutException)
+    _RETRYABLE_EXCEPTIONS = tuple(_RETRYABLE)
+except ImportError:
+    _RETRYABLE_EXCEPTIONS = (OSError, ConnectionError)
 
 
 @dataclass
@@ -62,11 +71,21 @@ class LLMClient:
 
         model_name = model or self._default_model
 
-        response = self._client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=config,
-        )
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=config,
+                )
+                break
+            except _RETRYABLE_EXCEPTIONS as e:
+                if attempt == max_retries - 1:
+                    raise
+                delay = 2 ** (attempt + 1)
+                time.sleep(delay)
+                continue
 
         # 记录最近一次调用的 token 使用情况，便于外部统计
         usage_raw = getattr(response, "usage", None)
