@@ -7,11 +7,14 @@
 [![Tavily](https://img.shields.io/badge/Tavily-Search_API-000000)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-基于 LLM 的简历与 JD 匹配度分析：
+1. 基于 LLM 的简历与 JD 匹配度分析：
 - 简历与JD解析，可支持图片，pdf，md，json格式
 - 匹配度分析并输出报告
 - tavily搜索公开信息辅助总结
 - 大牛辩论分析+总结
+
+2. 投递Tracker：
+- 记录每一次的投递，追踪投递数据
 
 
 ---
@@ -20,12 +23,12 @@
 
 | 功能模块 | 说明 |
 |----------|------|
-| **JD / 简历解析** | Flash 多模态 OCR + LLM 结构化：统一使用 Gemini Flash 对图片/PDF 提取文本，并用 LLM 解析出公司名、岗位名、地点等字段；入口为 `input/` 或页面上传/粘贴，原文与结构化结果均可在报告中查看。 |
-| **Tavily 情报搜索** | 基于解析出的公司、岗位、领域关键词调用 Tavily（或仅生成查询计划），获取公司介绍、岗位职责、面试经验与难度、行业/技术大环境等情报。 |
-| **匹配数据（不打分）** | 规则层维度（技能、经验、领域、教育、软能力）与差距列表 `gaps` 作为原始信号；句子级语义对齐（Gemini）为 JD 每条职责/要求匹配简历句子，仅输出证据对，不做评分。 |
+| **JD / 简历解析** | Fast模型 OCR 解析图片，pdf等格式输入 + LLM 结构化。 |
+| **Tavily 情报搜索** | 基于解析出的公司、岗位、领域关键词调用 Tavily 调查公司基本面信息 |
+| **匹配分析** | 规则层维度（技能、经验、领域、教育、软能力）与差距列表 `gaps` 作为原始信号；句子级语义对齐（Gemini）为 JD 每条职责/要求匹配简历句子，仅输出证据对，不做评分。 |
 | **大牛辩论与合议** | 可配置多角色 persona（如王川、Naval、特朗普等），从不同视角基于 JD/简历/匹配/Tavily 给出竞争力判断；每人随机看好/看空；主持人节点合议总结结论与推荐策略。 |
-| **报告与入库** | 按时间戳生成 Markdown 报告（JD、简历、Tavily、Matching、大牛辩论）；可选将 Job / Resume / Analysis / Applications 写入 SQLite，支持投递 Tracker 与策略分析。 |
-
+| **报告与入库** | 按时间戳生成 Markdown 报告（JD、简历、Tavily、Matching、大牛辩论）；最终数据入库，支持投递 Tracker 与策略分析。 |
+| **投递Tracker** | 每次分析自动生成投递记录，或手动插入投递记录。针对投递情况进行数据分析，策略解析。|
 ---
 
 ## 项目结构
@@ -35,7 +38,7 @@ resume_analysis_tool/
 ├── input/                  # JD 与简历统一入口（文件名含 jd/job、resume/cv，支持 PDF/图片）
 ├── src/
 │   ├── models/             # Pydantic 模型：ResumeProfile, JobProfile, MatchingResult 等
-│   ├── parsers/            # JD 解析、简历解析（规则版，不调用 LLM）
+│   ├── parsers/            # JD 解析、简历解析
 │   ├── llm/                # Gemini 封装、Prompt 模板、大牛人物库（debate_personas）
 │   ├── analysis/           # 匹配引擎（规则+语义对齐）、Tavily 搜索、简历重写（可选）
 │   ├── graph/              # LangGraph 流水线（解析 → Tavily → 匹配 → 大牛辩论 → 合议）
@@ -85,7 +88,7 @@ cp .env.example .env
 
 ### 3. 运行一次完整分析（CLI）
 
-将 JD、简历放入项目根目录下的 **`input/`**（文件名需含 `jd` 或 `job`、`resume` 或 `cv`，支持 PDF 与常见图片格式），然后执行：
+将 JD、简历放入项目根目录下的 **`input/`**（文件名需含 `jd` 或 `job`、`resume` 或 `cv`，支持 PDF 与常见图片格式，或直接在.env中指定jd以及简历文件），然后执行：
 
 ```bash
 python main.py
@@ -112,7 +115,7 @@ python -m src.db.init_db
   - `tavily_report.md`：Tavily 搜索策略（按公司/岗位/面试/行业分类）+ 摘要与链接；
   - `matching_report.md`：规则层维度得分与差距列表 + 句子级语义对齐原始 JSON/表格；
   - `debate_report.md`：各大牛个人观点（结论、信心、分析、建议）+ 合议总结。
-- **数据库**：表 `jobs`、`resumes`、`analyses`、`applications`（投递 Tracker）与 `rewritten_resumes`；报告数据与表映射见 [docs/report_to_db_mapping.md](docs/report_to_db_mapping.md) 与 [docs/tracker_implementation.md](docs/tracker_implementation.md)。当前主流程仍会写入 `rewritten_resumes` 表（若提供简历重写结果），但 Web/CLI 默认不触发重写。
+- **数据库**：表 `jobs`、`resumes`、`analyses`、`applications`（投递 Tracker）
 - **缓存机制（CLI 与 Web 共享）**：
   - OCR 文本缓存：以文件内容哈希为 key，将 Flash 多模态 OCR 提取的纯文本缓存在 `test_outputs/cache_ocr/`，同一 JD/简历文件不会重复调用 OCR。
   - 分析结果缓存：以 `jd_text + "\n====RESUME====\n" + resume_text` 的 sha256 为 key，将结构化 JD/简历、匹配结果、Tavily 情报与大牛辩论结果缓存在 `test_outputs/cache/<hash>.json`，`FORCE_REANALYZE=false` 时可复用，跳过 Tavily/匹配/辩论。

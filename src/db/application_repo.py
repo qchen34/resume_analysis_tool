@@ -17,12 +17,13 @@ def create(
     location: Optional[str] = None,
     salary_range: Optional[str] = None,
     platform: Optional[str] = None,
-    initiated_contact: Optional[bool] = None,
-    resume_sent: Optional[bool] = None,
-    has_reply: Optional[bool] = None,
-    has_interview: Optional[bool] = None,
+    initiated_contact: Optional[bool | int] = None,
+    resume_sent: Optional[bool | int] = None,
+    has_reply: Optional[bool | int] = None,
+    has_interview: Optional[bool | int] = None,
     interview_rounds: Optional[int] = None,
     interview_feedback: Optional[str] = None,
+    offer: Optional[bool | int] = None,
     offer_details: Optional[str] = None,
     analysis_id: Optional[int] = None,
     **kwargs: Any,
@@ -30,6 +31,17 @@ def create(
     """创建一条投递记录。"""
     db = SessionLocal()
     try:
+        def _to_int_flag(v: Optional[bool | int]) -> Optional[int]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return 1 if v else 0
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                return None
+            return 1 if iv != 0 else 0
+
         app = Application(
             analysis_id=analysis_id,
             company=company,
@@ -38,12 +50,13 @@ def create(
             location=location,
             salary_range=salary_range,
             platform=platform,
-            initiated_contact=initiated_contact,
-            resume_sent=resume_sent,
-            has_reply=has_reply,
-            has_interview=has_interview,
+            initiated_contact=_to_int_flag(initiated_contact),
+            resume_sent=_to_int_flag(resume_sent),
+            has_reply=_to_int_flag(has_reply),
+            has_interview=_to_int_flag(has_interview),
             interview_rounds=interview_rounds,
             interview_feedback=interview_feedback,
+            offer=_to_int_flag(offer),
             offer_details=offer_details,
         )
         db.add(app)
@@ -67,8 +80,8 @@ def list_applications(
     limit: int = 100,
     offset: int = 0,
     company: Optional[str] = None,
-    has_reply: Optional[bool] = None,
-    has_interview: Optional[bool] = None,
+    has_reply: Optional[bool | int] = None,
+    has_interview: Optional[bool | int] = None,
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
 ) -> List[Application]:
@@ -81,9 +94,9 @@ def list_applications(
         if company:
             q = q.filter(Application.company.ilike(f"%{company}%"))
         if has_reply is not None:
-            q = q.filter(Application.has_reply == has_reply)
+            q = q.filter(Application.has_reply == (1 if has_reply else 0))
         if has_interview is not None:
-            q = q.filter(Application.has_interview == has_interview)
+            q = q.filter(Application.has_interview == (1 if has_interview else 0))
         if from_date is not None:
             q = q.filter(Application.created_at >= from_date)
         if to_date is not None:
@@ -104,8 +117,19 @@ def update(
         if app is None:
             return None
         for k, v in kwargs.items():
-            if hasattr(Application, k) and v is not None:
-                setattr(app, k, v)
+            if not hasattr(Application, k) or v is None:
+                continue
+            if k in {"initiated_contact", "resume_sent", "has_reply", "has_interview", "offer"}:
+                # 布尔/标志字段统一转为 0/1
+                if isinstance(v, bool):
+                    v = 1 if v else 0
+                else:
+                    try:
+                        iv = int(v)
+                    except (TypeError, ValueError):
+                        iv = None
+                    v = None if iv is None else (1 if iv != 0 else 0)
+            setattr(app, k, v)
         db.commit()
         db.refresh(app)
         return app
@@ -155,6 +179,17 @@ def create_from_analysis(
                 location = job.location
             if jd_summary_or_link is None and job.raw_jd_text:
                 jd_summary_or_link = (job.raw_jd_text[:500] + "…") if len(job.raw_jd_text) > 500 else job.raw_jd_text
+        def _to_int_flag(v: Optional[bool | int]) -> Optional[int]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return 1 if v else 0
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                return None
+            return 1 if iv != 0 else 0
+
         app = Application(
             analysis_id=analysis_id,
             company=company,
@@ -163,12 +198,13 @@ def create_from_analysis(
             location=location,
             salary_range=overrides.get("salary_range"),
             platform=overrides.get("platform"),
-            initiated_contact=overrides.get("initiated_contact"),
-            resume_sent=overrides.get("resume_sent", True),
-            has_reply=overrides.get("has_reply"),
-            has_interview=overrides.get("has_interview"),
+            initiated_contact=_to_int_flag(overrides.get("initiated_contact")),
+            resume_sent=_to_int_flag(overrides.get("resume_sent", True)),
+            has_reply=_to_int_flag(overrides.get("has_reply")),
+            has_interview=_to_int_flag(overrides.get("has_interview")),
             interview_rounds=overrides.get("interview_rounds"),
             interview_feedback=overrides.get("interview_feedback"),
+            offer=_to_int_flag(overrides.get("offer")),
             offer_details=overrides.get("offer_details"),
         )
         db.add(app)
@@ -196,6 +232,7 @@ def to_dict(app: Application) -> Dict[str, Any]:
         "has_interview": app.has_interview,
         "interview_rounds": app.interview_rounds,
         "interview_feedback": app.interview_feedback,
+        "offer": app.offer,
         "offer_details": app.offer_details,
         "created_at": app.created_at.isoformat() if app.created_at else None,
         "updated_at": app.updated_at.isoformat() if app.updated_at else None,
@@ -218,9 +255,10 @@ def get_stats(
             q = q.filter(Application.created_at <= to_date)
         apps = q.all()
         total = len(apps)
-        replied = sum(1 for a in apps if a.has_reply)
-        interviewed = sum(1 for a in apps if a.has_interview)
-        with_offer = sum(1 for a in apps if (a.offer_details or "").strip())
+        replied = sum(1 for a in apps if (a.has_reply or 0) == 1)
+        interviewed = sum(1 for a in apps if (a.has_interview or 0) == 1)
+        # Offer：只以数值标志 offer(0/1) 为准；comments(offer_details) 不参与 Offer 统计
+        with_offer = sum(1 for a in apps if (a.offer or 0) == 1)
         return {
             "total": total,
             "replied": replied,

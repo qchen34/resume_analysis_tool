@@ -63,8 +63,8 @@ def _applications_to_text(apps: List[Application]) -> str:
             status.append("有回复")
         if a.has_interview:
             status.append("有面试")
-        if (a.offer_details or "").strip():
-            status.append("有 Offer 线索")
+        if (a.offer or 0) == 1:
+            status.append("有 Offer")
         status_str = "；".join(status) if status else "状态待更新"
         created = a.created_at.strftime("%Y-%m-%d") if a.created_at else "未知日期"
         lines.append(
@@ -169,14 +169,22 @@ def _summarize_tracker(tracker_text: str, memory_text: str, persona_summaries: D
     return llm_client.chat(messages)
 
 
-def main() -> None:
-    days = int(os.getenv("TRACKER_REVIEW_DAYS", "30") or "30")
+def run_tracker_review(
+    days: int | None = None,
+    personas_override: list[str] | None = None,
+) -> str:
+    """
+    执行一次 Tracker 多人物复盘，返回总结性报告文本。
+    同时会写入 test_outputs/tracker_<timestamp>/ 与 memory 文件。
+    可供 CLI 与 Streamlit 共用。
+    """
+    if days is None:
+        days = int(os.getenv("TRACKER_REVIEW_DAYS", "30") or "30")
     print(f"Tracker Review：最近 {days} 天的投递记录。")
-
     apps = _load_applications(days=days)
     if not apps:
         print("最近没有任何投递记录，退出。")
-        return
+        return "最近没有任何投递记录，暂无法生成复盘报告。"
 
     tracker_text = _applications_to_text(apps)
 
@@ -189,8 +197,8 @@ def main() -> None:
     out_dir = BASE_DIR / "test_outputs" / f"tracker_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 选择大牛（与 .env 一致）
-    personas = get_enabled_personas_from_env()
+    # 选择大牛：优先使用外部传入的 personas_override，否则与 .env 一致
+    personas = personas_override or get_enabled_personas_from_env()
     if not personas:
         print("警告：DEBATE_PERSONAS 为空，本次仅生成汇总报告，不做多角色分析。")
         personas = []
@@ -214,6 +222,16 @@ def main() -> None:
     # 更新 memory
     _append_memory(memory_path, summary, timestamp)
     print(f"已更新 memory 文件: {memory_path}")
+    return summary
+
+
+def main() -> None:
+    """CLI 入口：调用 run_tracker_review 并仅打印关键信息。"""
+    summary = run_tracker_review()
+    # 简要打印前几行，详细内容写入文件
+    print("\n=== 总结性报告（前几行预览） ===")
+    for line in summary.splitlines()[:10]:
+        print(line)
 
 
 if __name__ == "__main__":

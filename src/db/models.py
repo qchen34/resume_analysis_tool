@@ -108,10 +108,16 @@ class Application(Base):
     salary_range: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     platform: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # 投递平台
 
-    initiated_contact: Mapped[Optional[bool]] = mapped_column(nullable=True)  # 是否主动沟通
-    resume_sent: Mapped[Optional[bool]] = mapped_column(nullable=True)  # 是否已投递简历
-    has_reply: Mapped[Optional[bool]] = mapped_column(nullable=True, index=True)  # 是否有回复
-    has_interview: Mapped[Optional[bool]] = mapped_column(nullable=True, index=True)  # 是否邀约面试
+    # 状态字段：在数据库中统一存储为 0/1（整型），方便做统计与可视化；ORM 层使用 Optional[int]
+    initiated_contact: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 是否主动沟通：0/1
+    resume_sent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 是否已投递简历：0/1
+    has_reply: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)  # 是否有回复：0/1
+    has_interview: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )  # 是否邀约面试：0/1
+    offer: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )  # 是否拿到 Offer：0/1
     interview_rounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     interview_feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     offer_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -24,4 +24,9 @@ example_data/
 test_outputs/*
 !test_outputs/.gitkeep
 
+# Local application import CSVs (may contain private info)
+tests/application_test*.csv
+tests/application_test/*.csv
 
+tests/第一周复盘.csv
+memory/memory.md

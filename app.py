@@ -35,6 +35,7 @@ from src.db.application_repo import (
     update as update_application,
 )
 from src.analysis.strategy_summary import run_strategy_summary
+from tracker_review import run_tracker_review
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -75,11 +76,17 @@ def _render_tracker_tab() -> None:
 
     # 统计与策略
     st.caption("投递统计")
-    period = st.selectbox("统计周期", ["最近 7 天", "最近 30 天", "全部"], key="stats_period")
-    if period == "最近 7 天":
-        to_d, from_d = datetime.utcnow(), datetime.utcnow() - timedelta(days=7)
-    elif period == "最近 30 天":
+    # 默认选择「最近 30 天」
+    period = st.selectbox(
+        "统计周期",
+        ["最近 30 天", "最近 7 天", "全部"],
+        index=0,
+        key="stats_period",
+    )
+    if period == "最近 30 天":
         to_d, from_d = datetime.utcnow(), datetime.utcnow() - timedelta(days=30)
+    elif period == "最近 7 天":
+        to_d, from_d = datetime.utcnow(), datetime.utcnow() - timedelta(days=7)
     else:
         from_d, to_d = None, None
     stats = get_stats(from_date=from_d, to_date=to_d)
@@ -89,82 +96,25 @@ def _render_tracker_tab() -> None:
     c3.metric("有面试", f"{stats['interviewed']} ({stats['interview_rate']:.1f}%)")
     c4.metric("Offer", f"{stats['with_offer']} ({stats['offer_rate']:.1f}%)")
 
-    # 简易可视化：按日期的投递/回复/面试/Offer 趋势 + 按公司/平台聚合
-    trend_apps = list_applications(
-        limit=1000,
-        from_date=from_d,
-        to_date=to_d,
+    # 选择参与本次复盘的大牛（多选）
+    all_personas = list_all_persona_ids()
+    default_personas = get_enabled_personas_from_env() or all_personas
+    selected_personas = st.multiselect(
+        "选择参与本次求职复盘的大牛（多选）",
+        options=all_personas,
+        default=default_personas,
+        key="tracker_review_personas",
+        help="不选则默认使用 .env 中配置的 DEBATE_PERSONAS；如 .env 为空则使用全部人物。",
     )
-    if trend_apps:
-        df_trend = pd.DataFrame(
-            [
-                {
-                    "日期": (a.created_at.date() if a.created_at else None),
-                    "投递": 1,
-                    "有回复": 1 if a.has_reply else 0,
-                    "有面试": 1 if a.has_interview else 0,
-                    "有 Offer": 1 if (a.offer_details or "").strip() else 0,
-                    "公司": a.company or "",
-                    "职位": a.role_title or "",
-                }
-                for a in trend_apps
-            ]
-        )
-        df_trend = df_trend.dropna(subset=["日期"])
-        if not df_trend.empty:
-            col_chart_left, col_chart_right = st.columns(2)
 
-            with col_chart_left:
-                st.caption("按日期的投递/回复/面试/Offer 趋势")
-                df_daily = (
-                    df_trend.groupby("日期")[["投递", "有回复", "有面试", "有 Offer"]]
-                    .sum()
-                    .sort_index()
-                )
-                st.line_chart(df_daily, height=260)
-
-            with col_chart_right:
-                st.caption("按公司聚合投递次数（Top 10）")
-                df_company = (
-                    df_trend[df_trend["公司"] != ""]
-                    .groupby("公司")["投递"]
-                    .sum()
-                    .sort_values(ascending=False)
-                    .head(10)
-                    .reset_index()
-                )
-                if not df_company.empty:
-                    st.bar_chart(df_company.set_index("公司"), height=260)
-
-            # 渠道效率：按平台聚合回复率 / 面试率（仅展示有一定样本量的平台）
-            if "平台" in df_trend.columns:
-                st.caption("按平台聚合的回复率 / 面试率")
-                df_platform = (
-                    df_trend.assign(
-                        有回复=lambda d: d["有回复"].astype(int),
-                        有面试=lambda d: d["有面试"].astype(int),
-                    )
-                    .groupby("平台")[["投递", "有回复", "有面试"]]
-                    .sum()
-                )
-                df_platform = df_platform[df_platform["投递"] >= 2]  # 至少 2 条投递再展示，避免偶然值
-                if not df_platform.empty:
-                    df_platform["回复率(%)"] = df_platform["有回复"] / df_platform["投递"] * 100
-                    df_platform["面试率(%)"] = df_platform["有面试"] / df_platform["投递"] * 100
-                    st.dataframe(
-                        df_platform[["投递", "回复率(%)", "面试率(%)"]]
-                        .round(1)
-                        .sort_values("投递", ascending=False),
-                        use_container_width=True,
-                    )
-
-    if st.button("生成策略建议", key="strategy_btn"):
-        stats_text = f"统计周期：{period}。投递总数 {stats['total']}，回复 {stats['replied']}（回复率 {stats['reply_rate']:.1f}%），面试 {stats['interviewed']}（面试率 {stats['interview_rate']:.1f}%），Offer {stats['with_offer']}。"
+    if st.button("生成求职复盘", key="strategy_btn"):
         try:
-            with st.spinner("正在生成策略建议…"):
-                advice = run_strategy_summary(stats_text, history_summary=None)
-            st.markdown("**策略评估与建议**")
-            st.write(advice)
+            with st.spinner("正在进行多角色 Tracker 复盘（可能需要数十秒）…"):
+                personas_arg = selected_personas or None
+                summary = run_tracker_review(personas_override=personas_arg)
+            st.markdown("**总结性求职策略评估与建议（来自 Tracker Review）**")
+            st.markdown(summary)
+            st.caption("完整的多人物详细报告与本次总结已写入 `test_outputs/tracker_<timestamp>/` 以及 `memory/memory.md`。")
         except Exception as e:
             st.error(f"生成失败：{e}")
 
@@ -187,6 +137,7 @@ def _render_tracker_tab() -> None:
                     "已投简历": None,
                     "有回复": None,
                     "有面试": None,
+                    "Offer(0/1)": None,
                     "面试轮次": None,
                     "Offer": "",
                     "创建时间": "",
@@ -215,7 +166,8 @@ def _render_tracker_tab() -> None:
                     "有回复": a.has_reply,
                     "有面试": a.has_interview,
                     "面试轮次": a.interview_rounds,
-                    "Offer": a.offer_details or "",
+                    "Offer(0/1)": a.offer,
+                    "Comments": a.offer_details or "",
                     "创建时间": a.created_at.strftime("%Y-%m-%d %H:%M") if a.created_at else "",
                 }
             )
@@ -226,6 +178,7 @@ def _render_tracker_tab() -> None:
             num_rows="fixed",
             column_config={
                 "id": st.column_config.NumberColumn("id", disabled=True),
+                "Offer(0/1)": st.column_config.NumberColumn("Offer(0/1)", help="0=无 Offer，1=有 Offer"),
                 "创建时间": st.column_config.TextColumn("创建时间", disabled=True),
             },
             key="applications_editor",
@@ -252,24 +205,32 @@ def _render_tracker_tab() -> None:
                         ("地点", "location"),
                         ("薪资范围", "salary_range"),
                         ("平台", "platform"),
-                        ("Offer", "offer_details"),
+                        ("Comments", "offer_details"),
                     ]:
                         if _changed(col):
                             val = str(row[col]).strip()
                             updates[field] = val or None
 
-                    # 布尔字段
+                    # 布尔 / 标志字段（0/1）
                     for col, field in [
                         ("已投简历", "resume_sent"),
                         ("有回复", "has_reply"),
                         ("有面试", "has_interview"),
+                        ("Offer(0/1)", "offer"),
                     ]:
                         if _changed(col):
                             val = row[col]
                             if pd.isna(val):
                                 updates[field] = None
                             else:
-                                updates[field] = bool(val)
+                                try:
+                                    iv = int(val)
+                                except (TypeError, ValueError):
+                                    iv = None
+                                if iv is None:
+                                    updates[field] = None
+                                else:
+                                    updates[field] = 1 if iv != 0 else 0
 
                     # 面试轮次（整数或 None）
                     if _changed("面试轮次"):
@@ -300,22 +261,25 @@ def _render_tracker_tab() -> None:
         resume_sent = st.checkbox("已投递简历", value=True, key="tracker_resume_sent")
         has_reply = st.selectbox("是否有回复", ["", "是", "否"], index=0, key="tracker_has_reply")
         has_interview = st.selectbox("是否邀约面试", ["", "是", "否"], index=0, key="tracker_has_interview")
+        offer_flag = st.selectbox("是否有 Offer", ["", "是", "否"], index=0, key="tracker_has_offer")
         if st.button("保存投递记录", key="save_application"):
             try:
                 if use_current_analysis and st.session_state.get("last_analysis_id"):
                     app = create_from_analysis(
                         st.session_state["last_analysis_id"],
                         platform=platform or None,
-                        resume_sent=resume_sent,
-                        has_reply={"是": True, "否": False}.get(has_reply) if has_reply else None,
-                        has_interview={"是": True, "否": False}.get(has_interview) if has_interview else None,
+                        resume_sent=1 if resume_sent else 0,
+                        has_reply={"是": 1, "否": 0}.get(has_reply) if has_reply else None,
+                        has_interview={"是": 1, "否": 0}.get(has_interview) if has_interview else None,
+                        offer={"是": 1, "否": 0}.get(offer_flag) if offer_flag else None,
                     )
                 else:
                     app = create_application(
                         platform=platform or None,
-                        resume_sent=resume_sent,
-                        has_reply={"是": True, "否": False}.get(has_reply) if has_reply else None,
-                        has_interview={"是": True, "否": False}.get(has_interview) if has_interview else None,
+                        resume_sent=1 if resume_sent else 0,
+                        has_reply={"是": 1, "否": 0}.get(has_reply) if has_reply else None,
+                        has_interview={"是": 1, "否": 0}.get(has_interview) if has_interview else None,
+                        offer={"是": 1, "否": 0}.get(offer_flag) if offer_flag else None,
                     )
                 if app:
                     st.success(f"已创建投递记录 id={app.id}。")
@@ -326,38 +290,34 @@ def _render_tracker_tab() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Resume & JD Analysis",
+        page_title="求职助手（JD × 简历 × 投递复盘）",
         page_icon=":page_facing_up:",
         layout="wide",
     )
 
-    st.title("Resume Analysis Tool (Web)")
-    st.caption("两大模块：**JD 与简历分析**（匹配 + 辩论）、**投递记录**（独立 Tracker，可单独使用）。")
+    st.title("求职助手")
+    st.caption("一站式：**JD × 简历匹配分析** + **投递记录 Tracker** + **多角色求职复盘**。")
 
     # 顶层：分析与投递记录为平行模块
     tab_analysis, tab_tracker = st.tabs(["JD 与简历分析", "投递记录 (Tracker)"])
 
     with st.sidebar:
-        st.header("导航")
-        st.markdown("**1. JD 与简历分析**：上传/解析 JD 与简历 → 选择大牛 → 开始分析 → 查看概览/情报/匹配/辩论。")
-        st.markdown("**2. 投递记录**：独立模块，不依赖分析。可随时查看统计、新增/编辑投递、生成策略建议。")
-        st.caption("分析步骤（仅分析页）")
-        st.markdown("1. 准备文件（input/ 或上传） 2. 解析 JD/简历 3. 选择大牛 4. 开始分析")
-        st.caption("input 目录")
-        st.code("<项目根目录>/input", language="text")
+        st.subheader("快速开始")
+        st.markdown(
+            "- **JD 与简历分析**：上传文件 → 点击「解析」→（可选）选择参与辩论的大牛 → 点击「开始分析」。\n"
+            "- **投递记录**：查看统计 → 直接编辑表格并保存 → 点击「生成求职复盘」。"
+        )
+        st.divider()
+        st.caption("隐私提示：你上传/粘贴的内容会用于模型分析，请避免提交敏感信息。")
 
     # ---------- Tab 1：JD 与简历分析 ----------
     with tab_analysis:
-        st.markdown(
-            "默认使用 **input** 目录中的 JD/简历文件；也可在下方上传文件（支持拖拽）。"
-            " 一键完成：规则匹配、句子级语义对齐、Tavily 情报与大牛辩论合议。"
-        )
-
-        # 仅发现 input 目录中的文件路径，不自动解析；解析由下方「解析」按钮触发
+        st.markdown("上传 JD 与简历后，一键完成：结构化解析、匹配分析、情报补充与多角色辩论。")
+        # 本地运行时仍可从 input 目录自动发现文件；云端部署时通常不使用
         jd_path, resume_path = get_jd_and_resume_from_input(BASE_DIR)
 
         st.subheader("输入方式")
-        st.caption("上传 JD/简历（或使用 input 目录中的文件）后，点击「解析」按钮进行 OCR，解析结果会出现在下方文本框，再点击「开始分析」。")
+        st.caption("上传 JD/简历后，点击「解析」提取文本；你也可以直接在文本框中粘贴/编辑内容。")
 
         if "jd_text" not in st.session_state:
             st.session_state.jd_text = ""
@@ -389,7 +349,7 @@ def main() -> None:
                             st.error(f"JD 解析失败: {e}")
                             st.session_state.jd_text = ""
                 else:
-                    st.warning("请先上传 JD 文件，或将含 jd/job 的文件放入 input 目录。")
+                    st.warning("请先上传 JD 文件，或直接在下方文本框粘贴 JD 内容。")
 
         with col_upload_resume:
             upload_resume = st.file_uploader(
@@ -415,7 +375,7 @@ def main() -> None:
                             st.error(f"简历解析失败: {e}")
                             st.session_state.resume_text = ""
                 else:
-                    st.warning("请先上传简历文件，或将含 resume/cv 的文件放入 input 目录。")
+                    st.warning("请先上传简历文件，或直接在下方文本框粘贴简历内容。")
 
         # 文本框与 session_state 绑定（key 与 jd_text/resume_text 一致），解析结果写入 session 后会自动显示
         col_jd, col_resume = st.columns(2)
@@ -440,7 +400,7 @@ def main() -> None:
             st.session_state.analysis_done = False
 
         st.subheader("选择大牛")
-        st.caption("至少选一位大牛参与辩论；未选时使用 .env 中 DEBATE_PERSONAS。每人本次随机 50% 看好/看空。")
+        st.caption("选择参与辩论的视角（可多选）。")
         _all_ids = list_all_persona_ids()
         _default_ids = get_enabled_personas_from_env()
         # 默认选中与 env 一致，且只保留当前人物库里存在的 id
@@ -464,18 +424,19 @@ def main() -> None:
         st.subheader("运行选项")
         default_save_to_db = os.getenv("SAVE_TO_DB", "true").strip().lower() == "true"
         default_force_re = os.getenv("FORCE_REANALYZE", "false").strip().lower() == "true"
-        save_to_db_ui = st.checkbox(
-            "保存到数据库（SAVE_TO_DB）",
-            value=default_save_to_db,
-            key="ui_save_to_db",
-            help="勾选后，本次分析结果会写入 resume_analysis.db（jobs/resumes/analyses/applications）。",
-        )
-        force_reanalyze_ui = st.checkbox(
-            "强制重新分析（忽略缓存，FORCE_REANALYZE）",
-            value=default_force_re,
-            key="ui_force_reanalyze",
-            help="勾选后，无论是否存在缓存，都会重新跑 Tavily/匹配/大牛辩论。",
-        )
+        with st.expander("高级选项", expanded=False):
+            save_to_db_ui = st.checkbox(
+                "保存结果到数据库",
+                value=default_save_to_db,
+                key="ui_save_to_db",
+                help="开启后，本次分析结果会写入本项目数据库，便于在 Tracker 中复用。",
+            )
+            force_reanalyze_ui = st.checkbox(
+                "强制重新分析（忽略缓存）",
+                value=default_force_re,
+                key="ui_force_reanalyze",
+                help="开启后，即使存在缓存也会重新跑完整流程。",
+            )
 
         run_clicked = st.button("开始分析", type="primary", use_container_width=True)
 
