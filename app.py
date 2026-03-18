@@ -89,6 +89,75 @@ def _render_tracker_tab() -> None:
     c3.metric("有面试", f"{stats['interviewed']} ({stats['interview_rate']:.1f}%)")
     c4.metric("Offer", f"{stats['with_offer']} ({stats['offer_rate']:.1f}%)")
 
+    # 简易可视化：按日期的投递/回复/面试/Offer 趋势 + 按公司/平台聚合
+    trend_apps = list_applications(
+        limit=1000,
+        from_date=from_d,
+        to_date=to_d,
+    )
+    if trend_apps:
+        df_trend = pd.DataFrame(
+            [
+                {
+                    "日期": (a.created_at.date() if a.created_at else None),
+                    "投递": 1,
+                    "有回复": 1 if a.has_reply else 0,
+                    "有面试": 1 if a.has_interview else 0,
+                    "有 Offer": 1 if (a.offer_details or "").strip() else 0,
+                    "公司": a.company or "",
+                    "职位": a.role_title or "",
+                }
+                for a in trend_apps
+            ]
+        )
+        df_trend = df_trend.dropna(subset=["日期"])
+        if not df_trend.empty:
+            col_chart_left, col_chart_right = st.columns(2)
+
+            with col_chart_left:
+                st.caption("按日期的投递/回复/面试/Offer 趋势")
+                df_daily = (
+                    df_trend.groupby("日期")[["投递", "有回复", "有面试", "有 Offer"]]
+                    .sum()
+                    .sort_index()
+                )
+                st.line_chart(df_daily, height=260)
+
+            with col_chart_right:
+                st.caption("按公司聚合投递次数（Top 10）")
+                df_company = (
+                    df_trend[df_trend["公司"] != ""]
+                    .groupby("公司")["投递"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(10)
+                    .reset_index()
+                )
+                if not df_company.empty:
+                    st.bar_chart(df_company.set_index("公司"), height=260)
+
+            # 渠道效率：按平台聚合回复率 / 面试率（仅展示有一定样本量的平台）
+            if "平台" in df_trend.columns:
+                st.caption("按平台聚合的回复率 / 面试率")
+                df_platform = (
+                    df_trend.assign(
+                        有回复=lambda d: d["有回复"].astype(int),
+                        有面试=lambda d: d["有面试"].astype(int),
+                    )
+                    .groupby("平台")[["投递", "有回复", "有面试"]]
+                    .sum()
+                )
+                df_platform = df_platform[df_platform["投递"] >= 2]  # 至少 2 条投递再展示，避免偶然值
+                if not df_platform.empty:
+                    df_platform["回复率(%)"] = df_platform["有回复"] / df_platform["投递"] * 100
+                    df_platform["面试率(%)"] = df_platform["有面试"] / df_platform["投递"] * 100
+                    st.dataframe(
+                        df_platform[["投递", "回复率(%)", "面试率(%)"]]
+                        .round(1)
+                        .sort_values("投递", ascending=False),
+                        use_container_width=True,
+                    )
+
     if st.button("生成策略建议", key="strategy_btn"):
         stats_text = f"统计周期：{period}。投递总数 {stats['total']}，回复 {stats['replied']}（回复率 {stats['reply_rate']:.1f}%），面试 {stats['interviewed']}（面试率 {stats['interview_rate']:.1f}%），Offer {stats['with_offer']}。"
         try:
