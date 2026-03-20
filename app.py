@@ -312,12 +312,14 @@ def main() -> None:
 
     # ---------- Tab 1：JD 与简历分析 ----------
     with tab_analysis:
-        st.markdown("上传 JD 与简历后，一键完成：结构化解析、匹配分析、情报补充与多角色辩论。")
+        st.caption("按照下方步骤完成一次分析。")
         # 本地运行时仍可从 input 目录自动发现文件；云端部署时通常不使用
         jd_path, resume_path = get_jd_and_resume_from_input(BASE_DIR)
 
-        st.subheader("输入方式")
-        st.caption("上传 JD/简历后，点击「解析」提取文本；你也可以直接在文本框中粘贴/编辑内容。")
+        st.markdown(
+            "**步骤 1：上传文件并解析**"
+        )
+        st.caption("上传后需点击「解析」提取文本；你也可以直接在文本框中粘贴/编辑内容。")
 
         if "jd_text" not in st.session_state:
             st.session_state.jd_text = ""
@@ -327,29 +329,31 @@ def main() -> None:
         col_upload_jd, col_upload_resume = st.columns(2)
         with col_upload_jd:
             upload_jd = st.file_uploader(
-                "上传 JD（可拖拽）",
+                "上传职位描述（Job Description，可拖拽）",
                 type=["pdf", "png", "jpg", "jpeg", "bmp", "tiff"],
                 key="upload_jd",
                 help="支持 PDF、图片；上传后需点击「解析 JD」才会提取文本。",
             )
-            parse_jd_clicked = st.button("解析 JD", key="parse_jd", use_container_width=True)
+            parse_jd_clicked = st.button(
+                "解析职位描述（Job Description）", key="parse_jd", use_container_width=True
+            )
             if parse_jd_clicked:
                 if upload_jd is not None:
-                    with st.spinner("正在从上传的 JD 提取文本…"):
+                    with st.spinner("正在从上传的职位描述提取文本…"):
                         try:
                             st.session_state.jd_text = _extract_text_from_upload(upload_jd)
                         except Exception as e:
-                            st.error(f"JD 解析失败: {e}")
+                            st.error(f"职位描述解析失败: {e}")
                             st.session_state.jd_text = ""
                 elif jd_path and jd_path.exists():
-                    with st.spinner("正在从 input 目录的 JD 提取文本…"):
+                    with st.spinner("正在提取职位描述文本…"):
                         try:
                             st.session_state.jd_text = extract_text_auto(jd_path)
                         except Exception as e:
-                            st.error(f"JD 解析失败: {e}")
+                            st.error(f"职位描述解析失败: {e}")
                             st.session_state.jd_text = ""
                 else:
-                    st.warning("请先上传 JD 文件，或直接在下方文本框粘贴 JD 内容。")
+                    st.warning("请先上传职位描述文件，或直接在下方文本框粘贴职位描述内容。")
 
         with col_upload_resume:
             upload_resume = st.file_uploader(
@@ -381,7 +385,7 @@ def main() -> None:
         col_jd, col_resume = st.columns(2)
         with col_jd:
             jd_text = st.text_area(
-                "JD 原文（可编辑）",
+                "职位描述（Job Description）原文（可编辑）",
                 value=st.session_state.jd_text,
                 height=260,
                 placeholder="将使用 input 目录或上传文件提取的文本；也可直接粘贴或修改。",
@@ -399,29 +403,57 @@ def main() -> None:
         if "analysis_done" not in st.session_state:
             st.session_state.analysis_done = False
 
-        st.subheader("选择大牛")
-        st.caption("选择参与辩论的视角（可多选）。")
+        st.divider()
+        st.markdown("**步骤 2：选择分析大牛（可多选）**")
+        st.caption("勾选越多，观点越丰富；也会更耗时。")
+
         _all_ids = list_all_persona_ids()
         _default_ids = get_enabled_personas_from_env()
-        # 默认选中与 env 一致，且只保留当前人物库里存在的 id
-        _default = [p for p in _default_ids if p in _all_ids] if _default_ids else (_all_ids[:3] if _all_ids else [])
+        _default = (
+            [p for p in _default_ids if p in _all_ids]
+            if _default_ids
+            else (_all_ids[:3] if _all_ids else [])
+        )
 
         def _persona_label(pid: str) -> str:
             c = get_persona(pid)
             if not c:
                 return pid
-            return f"{c.get('display_name', pid)} [{c.get('category', '')}]"
+            name = c.get("display_name", pid)
+            cat = c.get("category", "")
+            return f"{name}（{cat}）" if cat else str(name)
 
-        selected_personas = st.multiselect(
-            "大牛（多选）",
-            options=_all_ids,
-            default=_default,
-            format_func=_persona_label,
-            key="select_debate_personas",
-        )
+        # 用 checkbox 代替 multiselect：视觉上直接列出所有大牛
+        selected_personas: list[str] = []
+        personas_by_cat = get_personas_by_category()
+        if not personas_by_cat:
+            personas_by_cat = {"全部": _all_ids}
+
+        # 初始化默认勾选（仅第一次）
+        if "tracker_debate_persona_init" not in st.session_state:
+            st.session_state.tracker_debate_persona_init = True
+            for pid in _default:
+                st.session_state[f"persona_checked_{pid}"] = True
+
+        for cat, pids in personas_by_cat.items():
+            if not pids:
+                continue
+            with st.expander(f"{cat}（{len(pids)}）", expanded=(cat in {"商界", "政界"})):
+                cols = st.columns(3)
+                for i, pid in enumerate(pids):
+                    with cols[i % 3]:
+                        checked = st.checkbox(
+                            _persona_label(pid),
+                            value=bool(st.session_state.get(f"persona_checked_{pid}", False)),
+                            key=f"persona_checked_{pid}",
+                        )
+                        if checked:
+                            selected_personas.append(pid)
+
         personas_to_use = selected_personas if selected_personas else _default
 
-        st.subheader("运行选项")
+        st.divider()
+        st.markdown("**步骤 3：开始分析**")
         default_save_to_db = os.getenv("SAVE_TO_DB", "true").strip().lower() == "true"
         default_force_re = os.getenv("FORCE_REANALYZE", "false").strip().lower() == "true"
         with st.expander("高级选项", expanded=False):
